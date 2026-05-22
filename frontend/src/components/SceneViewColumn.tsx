@@ -32,65 +32,91 @@ export default function SceneViewColumn({ scene, onRefresh }: Props) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ fontSize: 13, fontWeight: 600 }}>多视角</div>
 
-      {VIEWS.map(({ kind, label }) => {
-        const img = scene.views?.[kind] || null
-        const loading = busy === kind
-        return (
-          <div key={kind}>
-            <div style={{ fontSize: 12, color: '#5a6068', marginBottom: 4 }}>
-              {label}
-            </div>
-            {loading ? (
+      <div
+        style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}
+      >
+        <Image.PreviewGroup>
+          {VIEWS.map(({ kind, label }) => {
+            const img = scene.views?.[kind] || null
+            const loading = busy === kind
+            return (
               <div
-                style={{ textAlign: 'center', padding: '16px 0', color: '#999' }}
+                key={kind}
+                style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
               >
-                <Spin size="small" />
-                <div style={{ fontSize: 11, marginTop: 6 }}>生成中，约 2 分钟…</div>
-              </div>
-            ) : img ? (
-              <>
-                <Image
-                  src={imageUrl(img.filename)}
-                  style={{ width: '100%', borderRadius: 4 }}
-                />
-                <div style={{ marginTop: 4, display: 'flex', gap: 10 }}>
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ padding: 0 }}
-                    onClick={() =>
-                      downloadImage(img.filename, `${scene.name || '场景'}-${label}`)
-                    }
+                <div style={{ fontSize: 12, color: '#5a6068' }}>{label}</div>
+                {loading ? (
+                  <div
+                    style={{
+                      height: 96,
+                      borderRadius: 4,
+                      background: '#f4f5f7',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#999',
+                    }}
                   >
-                    下载
-                  </Button>
+                    <Spin size="small" />
+                    <div style={{ fontSize: 10, marginTop: 4 }}>约 2 分钟…</div>
+                  </div>
+                ) : img ? (
+                  <>
+                    <Image
+                      src={imageUrl(img.filename)}
+                      style={{
+                        width: '100%',
+                        height: 96,
+                        objectFit: 'contain',
+                        borderRadius: 4,
+                        background: '#f4f5f7',
+                      }}
+                    />
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                        onClick={() =>
+                          downloadImage(
+                            img.filename,
+                            `${scene.name || '场景'}-${label}`,
+                          )
+                        }
+                      >
+                        下载
+                      </Button>
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                        disabled={!hasCover || !!busy}
+                        onClick={() => gen(kind)}
+                      >
+                        重新生成
+                      </Button>
+                    </div>
+                  </>
+                ) : (
                   <Button
-                    type="link"
                     size="small"
-                    style={{ padding: 0 }}
+                    block
+                    style={{ height: 96, fontSize: 12 }}
                     disabled={!hasCover || !!busy}
                     onClick={() => gen(kind)}
                   >
-                    重新生成
+                    生成
                   </Button>
-                </div>
-              </>
-            ) : (
-              <Button
-                size="small"
-                block
-                disabled={!hasCover || !!busy}
-                onClick={() => gen(kind)}
-              >
-                生成{label}
-              </Button>
-            )}
-          </div>
-        )
-      })}
+                )}
+              </div>
+            )
+          })}
+        </Image.PreviewGroup>
+      </div>
 
       {!hasCover && (
         <div style={{ fontSize: 11, color: '#bbb' }}>
