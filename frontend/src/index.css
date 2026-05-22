@@ -1,0 +1,36 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  background: #f5f6f8;
+  color: #1f2328;
+}
+
+/* 提示词代码块滚动区 */
+.prompt-box {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  color: #3a3f45;
+}
+
+.prompt-box::-webkit-scrollbar {
+  width: 6px;
+}
+.prompt-box::-webkit-scrollbar-thumb {
+  background: #d0d3d8;
+  border-radius: 3px;
+}

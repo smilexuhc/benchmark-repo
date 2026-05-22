@@ -1,0 +1,17 @@
+# 依赖
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 密钥与本地数据（绝不入库）
+backend/.env
+backend/data/
+backend/data_backup_*/
+online_data/
+
+# 构建产物 / 日志 / 杂项
+frontend/dist/
+*.log
+.DS_Store
