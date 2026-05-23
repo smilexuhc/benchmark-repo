@@ -5,7 +5,7 @@
 
 时代列按现有库词汇归一：当代->现代、古装->古代、科幻->未来、近代不变。
 """
-from db import get_conn, init_db, now
+from db import ASSET_SCENE, find_asset_summaries_by_field, get_conn, init_db, insert_data
 
 _SUFFIX = "Photorealistic, cinematic lighting, ultra-detailed, 8k."
 
@@ -58,9 +58,7 @@ def main() -> None:
     init_db()
     conn = get_conn()
 
-    existing = {
-        r["name"] for r in conn.execute("SELECT name FROM scenes").fetchall()
-    }
+    existing = set(find_asset_summaries_by_field(conn, ASSET_SCENE, "name"))
     added = skipped = 0
     for name, era, stype, genre, mood, elements, body in SCENES:
         if name in existing:
@@ -68,11 +66,19 @@ def main() -> None:
             skipped += 1
             continue
         prompt = f"{body} {_SUFFIX}"
-        conn.execute(
-            "INSERT INTO scenes (name, era, scene_type, genre, mood, elements, "
-            "prompt, description, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
-            (name, era, stype, genre, mood, elements, prompt, now(), now()),
+        insert_data(
+            conn,
+            ASSET_SCENE,
+            {
+                "name": name,
+                "era": era,
+                "scene_type": stype,
+                "genre": genre,
+                "mood": mood,
+                "elements": elements,
+                "prompt": prompt,
+                "description": "",
+            },
         )
         added += 1
     conn.commit()

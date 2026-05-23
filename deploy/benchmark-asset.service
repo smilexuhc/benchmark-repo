@@ -7,7 +7,6 @@ Type=simple
 WorkingDirectory=/opt/benchmarkAsset
 Environment=HOST=127.0.0.1
 Environment=PORT=8000
-Environment=BENCHMARK_ASSET_DATA_DIR=/data/benchmarkAsset
 ExecStart=/opt/benchmarkAsset/start-production.sh
 Restart=always
 RestartSec=5

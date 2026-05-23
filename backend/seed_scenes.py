@@ -6,7 +6,7 @@
 """
 import sys
 
-from db import get_conn, init_db, now
+from db import ASSET_SCENE, clear_assets, count_assets, get_conn, init_db, insert_data
 
 _SUFFIX = "Photorealistic, cinematic lighting, ultra-detailed, 8k."
 
@@ -141,24 +141,31 @@ def main() -> None:
     init_db()
     conn = get_conn()
 
-    count = conn.execute("SELECT COUNT(*) AS c FROM scenes").fetchone()["c"]
+    count = count_assets(conn, ASSET_SCENE)
     if count > 0 and not force:
         print(f"scenes 表已有 {count} 条数据，跳过。如需重灌请加 --force")
         conn.close()
         return
     if force:
-        conn.execute("DELETE FROM scene_images")
-        conn.execute("DELETE FROM scenes")
+        clear_assets(conn, ASSET_SCENE)
         conn.commit()
         print("已清空旧场景数据。")
 
     for name, era, stype, genre, mood, elements, body in SCENES:
         prompt = f"{body} {_SUFFIX}"
-        conn.execute(
-            "INSERT INTO scenes (name, era, scene_type, genre, mood, elements, "
-            "prompt, description, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
-            (name, era, stype, genre, mood, elements, prompt, now(), now()),
+        insert_data(
+            conn,
+            ASSET_SCENE,
+            {
+                "name": name,
+                "era": era,
+                "scene_type": stype,
+                "genre": genre,
+                "mood": mood,
+                "elements": elements,
+                "prompt": prompt,
+                "description": "",
+            },
         )
     conn.commit()
     conn.close()

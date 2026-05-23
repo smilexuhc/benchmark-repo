@@ -1,4 +1,4 @@
-"""一次性导入脚本：把 ../角色资料库数据.csv 灌入 SQLite。
+"""一次性导入脚本：把 ../角色资料库数据.csv 灌入 Postgres/Neon。
 
 用法：
     python import_csv.py            # 库为空时导入，非空则跳过
@@ -8,7 +8,7 @@ import csv
 import os
 import sys
 
-from db import DB_PATH, get_conn, init_db, now
+from db import ASSET_CHARACTER, count_assets, clear_assets, get_conn, init_db, insert_data
 
 CSV_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "角色资料库数据.csv"
@@ -60,14 +60,13 @@ def main() -> None:
     init_db()
     conn = get_conn()
 
-    count = conn.execute("SELECT COUNT(*) AS c FROM characters").fetchone()["c"]
+    count = count_assets(conn, ASSET_CHARACTER)
     if count > 0 and not force:
         print(f"characters 表已有 {count} 条数据，跳过导入。如需重导请加 --force")
         conn.close()
         return
     if force:
-        conn.execute("DELETE FROM images")
-        conn.execute("DELETE FROM characters")
+        clear_assets(conn, ASSET_CHARACTER)
         conn.commit()
         print("已清空旧数据。")
 
@@ -84,16 +83,11 @@ def main() -> None:
             for i, field in enumerate(fields):
                 if field in NORMALIZE:
                     values[i] = NORMALIZE[field].get(values[i], values[i])
-            conn.execute(
-                f"INSERT INTO characters ({','.join(fields)}, description, "
-                f"created_at, updated_at) VALUES "
-                f"({','.join('?' * len(fields))}, '', ?, ?)",
-                values + [now(), now()],
-            )
+            insert_data(conn, ASSET_CHARACTER, dict(zip(fields, values)) | {"description": ""})
             inserted += 1
     conn.commit()
     conn.close()
-    print(f"导入完成：{inserted} 个角色 -> {DB_PATH}")
+    print(f"导入完成：{inserted} 个角色 -> Postgres assets")
 
 
 if __name__ == "__main__":

@@ -8,11 +8,8 @@
 import base64
 import json
 import os
-import uuid
 
 import httpx
-
-from db import IMAGES_DIR
 
 # 提示词生成的范例：让模型产出与现有资料库一致的 split-screen 设计稿提示词
 PROMPT_SYSTEM = """你是角色设定提示词工程师。根据用户给出的角色信息，输出一段**英文**的 AI 绘图提示词。
@@ -136,14 +133,14 @@ def generate_prompt(
     return (resp.choices[0].message.content or "").strip()
 
 
-def generate_image(
-    prompt: str, ref_image_path: str = "", aspect_override: str = ""
-) -> str:
-    """根据提示词生成图片，保存到 data/images，返回文件名。
+def generate_image_bytes(
+    prompt: str, ref_image_bytes: bytes | None = None, aspect_override: str = ""
+) -> bytes:
+    """根据提示词生成图片，返回 PNG/JPEG bytes。
 
     走 OpenRouter（OpenAI 兼容）的 chat/completions，请求带 modalities=["image","text"]，
     生成的图片在 choices[0].message.images[].image_url.url（base64 data URI）。
-    传入 ref_image_path 时为图生图：把参考图一并作为输入。
+    传入 ref_image_bytes 时为图生图：把参考图一并作为输入。
     """
     base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
     key = _api_key()
@@ -158,9 +155,8 @@ def generate_image(
     aspect = aspect_override.strip() or os.getenv("IMAGE_ASPECT_RATIO", "").strip() or "3:2"
     size = os.getenv("IMAGE_SIZE", "").strip() or "2K"
 
-    if ref_image_path:
-        with open(ref_image_path, "rb") as f:
-            ref_b64 = base64.b64encode(f.read()).decode()
+    if ref_image_bytes:
+        ref_b64 = base64.b64encode(ref_image_bytes).decode()
         content = [
             {"type": "text", "text": prompt},
             {"type": "image_url",
@@ -199,11 +195,14 @@ def generate_image(
         raw = httpx.get(url, timeout=120).content
     else:
         raise RuntimeError("图片接口返回的数据无法解析")
+    return raw
 
-    filename = f"{uuid.uuid4().hex}.png"
-    with open(os.path.join(IMAGES_DIR, filename), "wb") as f:
-        f.write(raw)
-    return filename
+
+def generate_image(
+    prompt: str, ref_image_bytes: bytes | None = None, aspect_override: str = ""
+) -> bytes:
+    """Backward-compatible wrapper for callers that still use generate_image."""
+    return generate_image_bytes(prompt, ref_image_bytes, aspect_override)
 
 
 EXTRACT_SYSTEM = """你从用户的中文角色描述里提取结构化字段，只输出一个 JSON 对象，不要任何多余文字。

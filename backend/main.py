@@ -7,7 +7,8 @@ import io
 import os
 import re
 import zipfile
-from typing import List, Optional
+from time import monotonic
+from typing import Callable, Optional
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -15,36 +16,71 @@ from dotenv import load_dotenv
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))  # 仅加载本项目的 .env
 
-# 后端只访问 ZenMux（国内直连）与 localhost，清掉继承自 shell 的代理，
-# 避免 httpx 因 SOCKS 代理报错。
 for _p in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
            "http_proxy", "https_proxy", "all_proxy"):
     os.environ.pop(_p, None)
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Response
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 import ai
+import storage
 from db import (
-    CHARACTER_FIELDS, FILTER_FIELDS, SCENE_FIELDS, SCENE_FILTER_FIELDS,
-    IMAGES_DIR, get_conn, init_db, now, genre_rank, order_filter_values,
+    ASSET_CHARACTER,
+    ASSET_SCENE,
+    CHARACTER_FIELDS,
+    FILTER_FIELDS,
+    SCENE_FIELDS,
+    SCENE_FILTER_FIELDS,
+    asset_to_dict,
+    attach_image,
+    create_asset,
+    delete_asset,
+    delete_image as db_delete_image,
+    get_asset,
+    get_conn,
+    get_options as db_get_options,
+    health_check as db_health_check,
+    init_db,
+    list_assets,
+    now,
+    replace_source_images,
+    set_cover as db_set_cover,
+    update_asset,
 )
 
 app = FastAPI(title="角色与场景资产库")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 本地工具，仅本机访问
+    allow_origins=["*"],  # 内部工具，访问控制交给 Nginx Basic Auth
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 init_db()
-app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+
+API_CACHE_TTL_SECONDS = float(os.getenv("API_CACHE_TTL_SECONDS", "30"))
+_API_CACHE: dict[tuple, tuple[float, object]] = {}
 
 
-# ---------- 数据模型 ----------
+def _cached_api(key: tuple, loader: Callable[[], object]) -> object:
+    if API_CACHE_TTL_SECONDS <= 0:
+        return loader()
+    now_ts = monotonic()
+    cached = _API_CACHE.get(key)
+    if cached and now_ts - cached[0] < API_CACHE_TTL_SECONDS:
+        return cached[1]
+    value = loader()
+    _API_CACHE[key] = (now_ts, value)
+    return value
+
+
+def _clear_api_cache() -> None:
+    _API_CACHE.clear()
+
+
 class CharacterIn(BaseModel):
     era: str = ""
     type: str = ""
@@ -64,269 +100,13 @@ class PromptReq(CharacterIn):
 
 class ImageGenReq(BaseModel):
     prompt: str
-    set_cover: bool = False  # 生成后是否把新图设为封面
+    set_cover: bool = False
 
 
 class ExtractReq(BaseModel):
     description: str = ""
 
 
-# ---------- 工具函数 ----------
-def character_to_dict(row, conn) -> dict:
-    d = dict(row)
-    imgs = conn.execute(
-        "SELECT id, filename, source, created_at FROM images "
-        "WHERE character_id = ? ORDER BY id",
-        (d["id"],),
-    ).fetchall()
-    d["images"] = [dict(i) for i in imgs]
-    cover = next((i for i in d["images"] if i["id"] == d["cover_image_id"]), None)
-    if cover is None and d["images"]:
-        cover = d["images"][0]
-    d["cover_filename"] = cover["filename"] if cover else None
-    return d
-
-
-def fetch_character(conn, cid: int) -> dict:
-    row = conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "角色不存在")
-    return character_to_dict(row, conn)
-
-
-# ---------- 筛选选项 ----------
-@app.get("/api/options")
-def get_options():
-    """返回各筛选维度在库中出现过的全部取值。"""
-    conn = get_conn()
-    out = {}
-    for field in FILTER_FIELDS:
-        rows = conn.execute(
-            f"SELECT DISTINCT {field} AS v FROM characters WHERE {field} != ''"
-        ).fetchall()
-        out[field] = order_filter_values(field, [r["v"] for r in rows])
-    conn.close()
-    return out
-
-
-# ---------- 角色 CRUD ----------
-@app.get("/api/characters")
-def list_characters(
-    era: Optional[str] = None,
-    type: Optional[str] = None,
-    gender: Optional[str] = None,
-    age: Optional[str] = None,
-    genre: Optional[str] = None,
-    q: Optional[str] = None,
-):
-    """列表 + 多维筛选 + 关键词搜索。筛选值用英文逗号分隔，多选取并集。"""
-    conn = get_conn()
-    where, params = [], []
-    for field, raw in [
-        ("era", era), ("type", type), ("gender", gender),
-        ("age", age), ("genre", genre),
-    ]:
-        if raw:
-            vals = [v for v in raw.split(",") if v]
-            if vals:
-                where.append(f"{field} IN ({','.join('?' * len(vals))})")
-                params.extend(vals)
-    if q:
-        where.append("(persona LIKE ? OR features LIKE ? OR prompt LIKE ?)")
-        params.extend([f"%{q}%"] * 3)
-
-    sql = "SELECT * FROM characters"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY id"
-    rows = conn.execute(sql, params).fetchall()
-    result = [character_to_dict(r, conn) for r in rows]
-    result.sort(key=lambda x: (genre_rank(x["genre"]), x["id"]))
-    conn.close()
-    return result
-
-
-@app.get("/api/characters/{cid}")
-def get_character(cid: int):
-    conn = get_conn()
-    data = fetch_character(conn, cid)
-    conn.close()
-    return data
-
-
-@app.post("/api/characters")
-def create_character(payload: CharacterIn):
-    conn = get_conn()
-    cols = CHARACTER_FIELDS + ["created_at", "updated_at"]
-    vals = [getattr(payload, f) for f in CHARACTER_FIELDS] + [now(), now()]
-    cur = conn.execute(
-        f"INSERT INTO characters ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
-        vals,
-    )
-    conn.commit()
-    data = fetch_character(conn, cur.lastrowid)
-    conn.close()
-    return data
-
-
-@app.put("/api/characters/{cid}")
-def update_character(cid: int, payload: CharacterIn):
-    conn = get_conn()
-    fetch_character(conn, cid)  # 404 校验
-    sets = ", ".join(f"{f} = ?" for f in CHARACTER_FIELDS)
-    vals = [getattr(payload, f) for f in CHARACTER_FIELDS] + [now(), cid]
-    conn.execute(f"UPDATE characters SET {sets}, updated_at = ? WHERE id = ?", vals)
-    conn.commit()
-    data = fetch_character(conn, cid)
-    conn.close()
-    return data
-
-
-@app.delete("/api/characters/{cid}")
-def delete_character(cid: int):
-    conn = get_conn()
-    imgs = conn.execute(
-        "SELECT filename FROM images WHERE character_id = ?", (cid,)
-    ).fetchall()
-    conn.execute("DELETE FROM characters WHERE id = ?", (cid,))
-    conn.commit()
-    conn.close()
-    for i in imgs:  # 一并删除磁盘图片
-        path = os.path.join(IMAGES_DIR, i["filename"])
-        if os.path.exists(path):
-            os.remove(path)
-    return {"ok": True}
-
-
-# ---------- 图片 ----------
-@app.post("/api/characters/{cid}/images")
-async def upload_image(cid: int, file: UploadFile = File(...)):
-    """手动上传图片到角色图集。"""
-    conn = get_conn()
-    fetch_character(conn, cid)
-    ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
-    import uuid
-    filename = f"{uuid.uuid4().hex}{ext}"
-    with open(os.path.join(IMAGES_DIR, filename), "wb") as f:
-        f.write(await file.read())
-    img = _attach_image(conn, cid, filename, "uploaded")
-    conn.close()
-    return img
-
-
-@app.delete("/api/images/{img_id}")
-def delete_image(img_id: int):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM images WHERE id = ?", (img_id,)).fetchone()
-    if row is None:
-        conn.close()
-        raise HTTPException(404, "图片不存在")
-    conn.execute("DELETE FROM images WHERE id = ?", (img_id,))
-    conn.execute(
-        "UPDATE characters SET cover_image_id = NULL WHERE cover_image_id = ?",
-        (img_id,),
-    )
-    conn.commit()
-    conn.close()
-    path = os.path.join(IMAGES_DIR, row["filename"])
-    if os.path.exists(path):
-        os.remove(path)
-    return {"ok": True}
-
-
-@app.put("/api/characters/{cid}/cover/{img_id}")
-def set_cover(cid: int, img_id: int):
-    conn = get_conn()
-    fetch_character(conn, cid)
-    conn.execute(
-        "UPDATE characters SET cover_image_id = ?, updated_at = ? WHERE id = ?",
-        (img_id, now(), cid),
-    )
-    conn.commit()
-    data = fetch_character(conn, cid)
-    conn.close()
-    return data
-
-
-def _attach_image(conn, cid: int, filename: str, source: str) -> dict:
-    cur = conn.execute(
-        "INSERT INTO images (character_id, filename, source, created_at) "
-        "VALUES (?, ?, ?, ?)",
-        (cid, filename, source, now()),
-    )
-    # 首张图自动设为封面
-    row = conn.execute("SELECT cover_image_id FROM characters WHERE id = ?", (cid,)).fetchone()
-    if row and row["cover_image_id"] is None:
-        conn.execute(
-            "UPDATE characters SET cover_image_id = ? WHERE id = ?",
-            (cur.lastrowid, cid),
-        )
-    conn.commit()
-    img = conn.execute(
-        "SELECT id, filename, source, created_at FROM images WHERE id = ?",
-        (cur.lastrowid,),
-    ).fetchone()
-    return dict(img)
-
-
-# ---------- AI ----------
-@app.post("/api/extract-fields")
-def api_extract_fields(payload: ExtractReq):
-    """根据自由描述解析出结构化字段（无状态，不落库）。"""
-    if not payload.description.strip():
-        raise HTTPException(400, "自由描述为空")
-    try:
-        return ai.extract_fields(payload.description, get_options())
-    except ai.AIConfigError as e:
-        raise HTTPException(400, str(e))
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"字段解析失败：{e}")
-
-
-@app.post("/api/generate-prompt")
-def api_generate_prompt(payload: PromptReq):
-    """根据结构化字段或自由描述生成英文提示词（无状态，不落库）。"""
-    try:
-        prompt = ai.generate_prompt(payload.model_dump(), payload.description)
-    except ai.AIConfigError as e:
-        raise HTTPException(400, str(e))
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"提示词生成失败：{e}")
-    return {"prompt": prompt}
-
-
-@app.post("/api/characters/{cid}/generate-image")
-def api_generate_image(cid: int, payload: ImageGenReq):
-    """根据提示词生成图片并加入该角色图集。"""
-    conn = get_conn()
-    fetch_character(conn, cid)
-    try:
-        filename = ai.generate_image(payload.prompt)
-    except ai.AIConfigError as e:
-        conn.close()
-        raise HTTPException(400, str(e))
-    except ValueError as e:
-        conn.close()
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        conn.close()
-        raise HTTPException(502, f"图片生成失败：{e}")
-    img = _attach_image(conn, cid, filename, "generated")
-    if payload.set_cover:
-        conn.execute(
-            "UPDATE characters SET cover_image_id = ?, updated_at = ? WHERE id = ?",
-            (img["id"], now(), cid),
-        )
-        conn.commit()
-    conn.close()
-    return img
-
-
-# ========== 场景资产库 ==========
 class SceneIn(BaseModel):
     name: str = ""
     era: str = ""
@@ -346,7 +126,6 @@ class SceneViewReq(BaseModel):
     view: str  # reverse | multiview
 
 
-# 多视角图生图：source 标记 -> (英文指令, 宽高比)
 VIEW_PROMPTS = {
     "reverse": (
         "The attached image is a reference of a scene environment. Create ONE "
@@ -374,67 +153,209 @@ VIEW_PROMPTS = {
 VIEW_SOURCES = set(VIEW_PROMPTS)
 
 
-def scene_to_dict(row, conn) -> dict:
-    d = dict(row)
-    imgs = [
-        dict(i)
-        for i in conn.execute(
-            "SELECT id, filename, source, created_at FROM scene_images "
-            "WHERE scene_id = ? ORDER BY id",
-            (d["id"],),
-        ).fetchall()
-    ]
-    # 主图集只含普通图；多视角图（正反打/4视图）单独放 views
-    d["images"] = [i for i in imgs if i["source"] not in VIEW_SOURCES]
-    d["views"] = {}
-    for v in VIEW_PROMPTS:
-        same = [i for i in imgs if i["source"] == v]
-        d["views"][v] = same[-1] if same else None
-    cover = next((i for i in d["images"] if i["id"] == d["cover_image_id"]), None)
-    if cover is None and d["images"]:
-        cover = d["images"][0]
-    d["cover_filename"] = cover["filename"] if cover else None
-    return d
+def fetch_character(conn, cid: int) -> dict:
+    row = get_asset(conn, ASSET_CHARACTER, cid)
+    if row is None:
+        raise HTTPException(404, "角色不存在")
+    return asset_to_dict(conn, row, CHARACTER_FIELDS)
 
 
 def fetch_scene(conn, sid: int) -> dict:
-    row = conn.execute("SELECT * FROM scenes WHERE id = ?", (sid,)).fetchone()
+    row = get_asset(conn, ASSET_SCENE, sid)
     if row is None:
         raise HTTPException(404, "场景不存在")
-    return scene_to_dict(row, conn)
+    return asset_to_dict(conn, row, SCENE_FIELDS, VIEW_SOURCES)
 
 
-def _attach_scene_image(conn, sid: int, filename: str, source: str) -> dict:
-    cur = conn.execute(
-        "INSERT INTO scene_images (scene_id, filename, source, created_at) "
-        "VALUES (?, ?, ?, ?)",
-        (sid, filename, source, now()),
-    )
-    row = conn.execute("SELECT cover_image_id FROM scenes WHERE id = ?", (sid,)).fetchone()
-    if row and row["cover_image_id"] is None:
-        conn.execute(
-            "UPDATE scenes SET cover_image_id = ? WHERE id = ?",
-            (cur.lastrowid, sid),
-        )
-    conn.commit()
-    img = conn.execute(
-        "SELECT id, filename, source, created_at FROM scene_images WHERE id = ?",
-        (cur.lastrowid,),
-    ).fetchone()
-    return dict(img)
+def _delete_objects(keys: list[str]) -> None:
+    for key in keys:
+        try:
+            storage.delete_object(key)
+        except Exception:
+            pass
+
+
+def _upload_image_bytes(data: bytes, ext: str = ".png", content_type: str = "image/png") -> str:
+    key = storage.new_object_key(ext)
+    storage.put_bytes(key, data, content_type)
+    return key
+
+
+@app.get("/images/{object_key:path}")
+def image_redirect(object_key: str):
+    """Keep the old /images/... URL shape while serving private TOS objects."""
+    try:
+        return RedirectResponse(storage.object_url(object_key))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(404, f"图片不可用：{e}") from e
+
+
+@app.get("/api/options")
+def get_options():
+    def load():
+        with get_conn() as conn:
+            return db_get_options(conn, ASSET_CHARACTER, FILTER_FIELDS)
+
+    return _cached_api(("character_options",), load)
+
+
+@app.get("/api/characters")
+def list_characters(
+    era: Optional[str] = None,
+    type: Optional[str] = None,
+    gender: Optional[str] = None,
+    age: Optional[str] = None,
+    genre: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    def load():
+        with get_conn() as conn:
+            result = list_assets(
+                conn,
+                ASSET_CHARACTER,
+                CHARACTER_FIELDS,
+                [("era", era), ("type", type), ("gender", gender), ("age", age), ("genre", genre)],
+                q,
+                ["persona", "features", "prompt"],
+            )
+        result.sort(key=lambda x: (x.get("genre") or "", x["id"]))
+        return result
+
+    return _cached_api(("characters", era, type, gender, age, genre, q), load)
+
+
+@app.get("/api/characters/{cid}")
+def get_character(cid: int):
+    with get_conn() as conn:
+        return fetch_character(conn, cid)
+
+
+@app.post("/api/characters")
+def create_character(payload: CharacterIn):
+    with get_conn() as conn:
+        cid = create_asset(conn, ASSET_CHARACTER, CHARACTER_FIELDS, payload)
+        conn.commit()
+        data = fetch_character(conn, cid)
+    _clear_api_cache()
+    return data
+
+
+@app.put("/api/characters/{cid}")
+def update_character(cid: int, payload: CharacterIn):
+    with get_conn() as conn:
+        fetch_character(conn, cid)
+        update_asset(conn, ASSET_CHARACTER, cid, CHARACTER_FIELDS, payload)
+        conn.commit()
+        data = fetch_character(conn, cid)
+    _clear_api_cache()
+    return data
+
+
+@app.delete("/api/characters/{cid}")
+def delete_character(cid: int):
+    with get_conn() as conn:
+        fetch_character(conn, cid)
+        keys = delete_asset(conn, ASSET_CHARACTER, cid)
+        conn.commit()
+    _clear_api_cache()
+    _delete_objects(keys)
+    return {"ok": True}
+
+
+@app.post("/api/characters/{cid}/images")
+async def upload_image(cid: int, file: UploadFile = File(...)):
+    with get_conn() as conn:
+        fetch_character(conn, cid)
+        ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
+        content_type = file.content_type or "application/octet-stream"
+        key = _upload_image_bytes(await file.read(), ext, content_type)
+        img = attach_image(conn, cid, key, "uploaded")
+        conn.commit()
+    _clear_api_cache()
+    return img
+
+
+@app.delete("/api/images/{img_id}")
+def delete_image(img_id: int):
+    with get_conn() as conn:
+        key = db_delete_image(conn, img_id, ASSET_CHARACTER)
+        if key is None:
+            raise HTTPException(404, "图片不存在")
+        conn.commit()
+    _clear_api_cache()
+    storage.delete_object(key)
+    return {"ok": True}
+
+
+@app.put("/api/characters/{cid}/cover/{img_id}")
+def set_cover(cid: int, img_id: int):
+    with get_conn() as conn:
+        fetch_character(conn, cid)
+        try:
+            db_set_cover(conn, ASSET_CHARACTER, cid, img_id)
+        except KeyError as e:
+            raise HTTPException(404, "图片不存在") from e
+        conn.commit()
+        data = fetch_character(conn, cid)
+    _clear_api_cache()
+    return data
+
+
+@app.post("/api/extract-fields")
+def api_extract_fields(payload: ExtractReq):
+    if not payload.description.strip():
+        raise HTTPException(400, "自由描述为空")
+    try:
+        return ai.extract_fields(payload.description, get_options())
+    except ai.AIConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"字段解析失败：{e}") from e
+
+
+@app.post("/api/generate-prompt")
+def api_generate_prompt(payload: PromptReq):
+    try:
+        prompt = ai.generate_prompt(payload.model_dump(), payload.description)
+    except ai.AIConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"提示词生成失败：{e}") from e
+    return {"prompt": prompt}
+
+
+@app.post("/api/characters/{cid}/generate-image")
+def api_generate_image(cid: int, payload: ImageGenReq):
+    with get_conn() as conn:
+        fetch_character(conn, cid)
+        try:
+            raw = ai.generate_image(payload.prompt)
+            key = _upload_image_bytes(raw)
+        except ai.AIConfigError as e:
+            raise HTTPException(400, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"图片生成失败：{e}") from e
+        img = attach_image(conn, cid, key, "generated")
+        if payload.set_cover:
+            db_set_cover(conn, ASSET_CHARACTER, cid, img["id"])
+        conn.commit()
+    _clear_api_cache()
+    return img
 
 
 @app.get("/api/scenes/options")
 def get_scene_options():
-    conn = get_conn()
-    out = {}
-    for field in SCENE_FILTER_FIELDS:
-        rows = conn.execute(
-            f"SELECT DISTINCT {field} AS v FROM scenes WHERE {field} != ''"
-        ).fetchall()
-        out[field] = order_filter_values(field, [r["v"] for r in rows])
-    conn.close()
-    return out
+    def load():
+        with get_conn() as conn:
+            return db_get_options(conn, ASSET_SCENE, SCENE_FILTER_FIELDS)
+
+    return _cached_api(("scene_options",), load)
 
 
 @app.get("/api/scenes")
@@ -445,128 +366,97 @@ def list_scenes(
     mood: Optional[str] = None,
     q: Optional[str] = None,
 ):
-    conn = get_conn()
-    where, params = [], []
-    for field, raw in [
-        ("era", era), ("scene_type", scene_type),
-        ("genre", genre), ("mood", mood),
-    ]:
-        if raw:
-            vals = [v for v in raw.split(",") if v]
-            if vals:
-                where.append(f"{field} IN ({','.join('?' * len(vals))})")
-                params.extend(vals)
-    if q:
-        where.append("(name LIKE ? OR elements LIKE ? OR prompt LIKE ?)")
-        params.extend([f"%{q}%"] * 3)
-    sql = "SELECT * FROM scenes"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY id"
-    rows = conn.execute(sql, params).fetchall()
-    result = [scene_to_dict(r, conn) for r in rows]
-    result.sort(key=lambda x: (genre_rank(x["genre"]), x["id"]))
-    conn.close()
-    return result
+    def load():
+        with get_conn() as conn:
+            result = list_assets(
+                conn,
+                ASSET_SCENE,
+                SCENE_FIELDS,
+                [("era", era), ("scene_type", scene_type), ("genre", genre), ("mood", mood)],
+                q,
+                ["name", "elements", "prompt"],
+                VIEW_SOURCES,
+            )
+        result.sort(key=lambda x: (x.get("genre") or "", x["id"]))
+        return result
+
+    return _cached_api(("scenes", era, scene_type, genre, mood, q), load)
 
 
 @app.get("/api/scenes/{sid}")
 def get_scene(sid: int):
-    conn = get_conn()
-    data = fetch_scene(conn, sid)
-    conn.close()
-    return data
+    with get_conn() as conn:
+        return fetch_scene(conn, sid)
 
 
 @app.post("/api/scenes")
 def create_scene(payload: SceneIn):
-    conn = get_conn()
-    cols = SCENE_FIELDS + ["created_at", "updated_at"]
-    vals = [getattr(payload, f) for f in SCENE_FIELDS] + [now(), now()]
-    cur = conn.execute(
-        f"INSERT INTO scenes ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
-        vals,
-    )
-    conn.commit()
-    data = fetch_scene(conn, cur.lastrowid)
-    conn.close()
+    with get_conn() as conn:
+        sid = create_asset(conn, ASSET_SCENE, SCENE_FIELDS, payload)
+        conn.commit()
+        data = fetch_scene(conn, sid)
+    _clear_api_cache()
     return data
 
 
 @app.put("/api/scenes/{sid}")
 def update_scene(sid: int, payload: SceneIn):
-    conn = get_conn()
-    fetch_scene(conn, sid)
-    sets = ", ".join(f"{f} = ?" for f in SCENE_FIELDS)
-    vals = [getattr(payload, f) for f in SCENE_FIELDS] + [now(), sid]
-    conn.execute(f"UPDATE scenes SET {sets}, updated_at = ? WHERE id = ?", vals)
-    conn.commit()
-    data = fetch_scene(conn, sid)
-    conn.close()
+    with get_conn() as conn:
+        fetch_scene(conn, sid)
+        update_asset(conn, ASSET_SCENE, sid, SCENE_FIELDS, payload)
+        conn.commit()
+        data = fetch_scene(conn, sid)
+    _clear_api_cache()
     return data
 
 
 @app.delete("/api/scenes/{sid}")
 def delete_scene(sid: int):
-    conn = get_conn()
-    imgs = conn.execute(
-        "SELECT filename FROM scene_images WHERE scene_id = ?", (sid,)
-    ).fetchall()
-    conn.execute("DELETE FROM scenes WHERE id = ?", (sid,))
-    conn.commit()
-    conn.close()
-    for i in imgs:
-        path = os.path.join(IMAGES_DIR, i["filename"])
-        if os.path.exists(path):
-            os.remove(path)
+    with get_conn() as conn:
+        fetch_scene(conn, sid)
+        keys = delete_asset(conn, ASSET_SCENE, sid)
+        conn.commit()
+    _clear_api_cache()
+    _delete_objects(keys)
     return {"ok": True}
 
 
 @app.post("/api/scenes/{sid}/images")
 async def upload_scene_image(sid: int, file: UploadFile = File(...)):
-    conn = get_conn()
-    fetch_scene(conn, sid)
-    ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
-    import uuid
-    filename = f"{uuid.uuid4().hex}{ext}"
-    with open(os.path.join(IMAGES_DIR, filename), "wb") as f:
-        f.write(await file.read())
-    img = _attach_scene_image(conn, sid, filename, "uploaded")
-    conn.close()
+    with get_conn() as conn:
+        fetch_scene(conn, sid)
+        ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
+        content_type = file.content_type or "application/octet-stream"
+        key = _upload_image_bytes(await file.read(), ext, content_type)
+        img = attach_image(conn, sid, key, "uploaded")
+        conn.commit()
+    _clear_api_cache()
     return img
 
 
 @app.delete("/api/scene-images/{img_id}")
 def delete_scene_image(img_id: int):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM scene_images WHERE id = ?", (img_id,)).fetchone()
-    if row is None:
-        conn.close()
-        raise HTTPException(404, "图片不存在")
-    conn.execute("DELETE FROM scene_images WHERE id = ?", (img_id,))
-    conn.execute(
-        "UPDATE scenes SET cover_image_id = NULL WHERE cover_image_id = ?",
-        (img_id,),
-    )
-    conn.commit()
-    conn.close()
-    path = os.path.join(IMAGES_DIR, row["filename"])
-    if os.path.exists(path):
-        os.remove(path)
+    with get_conn() as conn:
+        key = db_delete_image(conn, img_id, ASSET_SCENE)
+        if key is None:
+            raise HTTPException(404, "图片不存在")
+        conn.commit()
+    _clear_api_cache()
+    storage.delete_object(key)
     return {"ok": True}
 
 
 @app.put("/api/scenes/{sid}/cover/{img_id}")
 def set_scene_cover(sid: int, img_id: int):
-    conn = get_conn()
-    fetch_scene(conn, sid)
-    conn.execute(
-        "UPDATE scenes SET cover_image_id = ?, updated_at = ? WHERE id = ?",
-        (img_id, now(), sid),
-    )
-    conn.commit()
-    data = fetch_scene(conn, sid)
-    conn.close()
+    with get_conn() as conn:
+        fetch_scene(conn, sid)
+        try:
+            db_set_cover(conn, ASSET_SCENE, sid, img_id)
+        except KeyError as e:
+            raise HTTPException(404, "图片不存在") from e
+        conn.commit()
+        data = fetch_scene(conn, sid)
+    _clear_api_cache()
     return data
 
 
@@ -575,11 +465,11 @@ def api_generate_scene_prompt(payload: ScenePromptReq):
     try:
         prompt = ai.generate_scene_prompt(payload.model_dump(), payload.description)
     except ai.AIConfigError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"提示词生成失败：{e}")
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"提示词生成失败：{e}") from e
     return {"prompt": prompt}
 
 
@@ -590,88 +480,63 @@ def api_extract_scene_fields(payload: ExtractReq):
     try:
         return ai.extract_scene_fields(payload.description, get_scene_options())
     except ai.AIConfigError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"字段解析失败：{e}")
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"字段解析失败：{e}") from e
 
 
 @app.post("/api/scenes/{sid}/generate-image")
 def api_generate_scene_image(sid: int, payload: ImageGenReq):
-    conn = get_conn()
-    fetch_scene(conn, sid)
-    try:
-        filename = ai.generate_image(payload.prompt)
-    except ai.AIConfigError as e:
-        conn.close()
-        raise HTTPException(400, str(e))
-    except ValueError as e:
-        conn.close()
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        conn.close()
-        raise HTTPException(502, f"图片生成失败：{e}")
-    img = _attach_scene_image(conn, sid, filename, "generated")
-    if payload.set_cover:
-        conn.execute(
-            "UPDATE scenes SET cover_image_id = ?, updated_at = ? WHERE id = ?",
-            (img["id"], now(), sid),
-        )
+    with get_conn() as conn:
+        fetch_scene(conn, sid)
+        try:
+            raw = ai.generate_image(payload.prompt)
+            key = _upload_image_bytes(raw)
+        except ai.AIConfigError as e:
+            raise HTTPException(400, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"图片生成失败：{e}") from e
+        img = attach_image(conn, sid, key, "generated")
+        if payload.set_cover:
+            db_set_cover(conn, ASSET_SCENE, sid, img["id"])
         conn.commit()
-    conn.close()
+    _clear_api_cache()
     return img
 
 
 @app.post("/api/scenes/{sid}/generate-view")
 def api_generate_scene_view(sid: int, payload: SceneViewReq):
-    """图生图：以场景封面图为参考，生成正反打 / 4视图。"""
     if payload.view not in VIEW_PROMPTS:
         raise HTTPException(400, "view 取值应为 reverse 或 multiview")
-    conn = get_conn()
-    scene = fetch_scene(conn, sid)
-    cover = scene.get("cover_filename")
-    if not cover:
-        conn.close()
-        raise HTTPException(400, "该场景还没有图片，请先生成场景图")
-    ref_path = os.path.join(IMAGES_DIR, cover)
-    if not os.path.exists(ref_path):
-        conn.close()
-        raise HTTPException(400, "场景封面图文件缺失")
+    with get_conn() as conn:
+        scene = fetch_scene(conn, sid)
+        cover = scene.get("cover_filename")
+        if not cover:
+            raise HTTPException(400, "该场景还没有图片，请先生成场景图")
+        prompt, aspect = VIEW_PROMPTS[payload.view]
+        try:
+            ref = storage.get_bytes(cover)
+            raw = ai.generate_image(prompt, ref_image_bytes=ref, aspect_override=aspect)
+            key = _upload_image_bytes(raw)
+        except ai.AIConfigError as e:
+            raise HTTPException(400, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"图片生成失败：{e}") from e
 
-    prompt, aspect = VIEW_PROMPTS[payload.view]
-    try:
-        filename = ai.generate_image(prompt, ref_image_path=ref_path, aspect_override=aspect)
-    except ai.AIConfigError as e:
-        conn.close()
-        raise HTTPException(400, str(e))
-    except (ValueError, FileNotFoundError) as e:
-        conn.close()
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        conn.close()
-        raise HTTPException(502, f"图片生成失败：{e}")
-
-    # 同类旧图先删（再点即替换）
-    old = conn.execute(
-        "SELECT filename FROM scene_images WHERE scene_id = ? AND source = ?",
-        (sid, payload.view),
-    ).fetchall()
-    conn.execute(
-        "DELETE FROM scene_images WHERE scene_id = ? AND source = ?",
-        (sid, payload.view),
-    )
-    conn.commit()
-    for o in old:
-        p = os.path.join(IMAGES_DIR, o["filename"])
-        if os.path.exists(p):
-            os.remove(p)
-    img = _attach_scene_image(conn, sid, filename, payload.view)
-    conn.close()
+        old_keys = replace_source_images(conn, sid, payload.view)
+        img = attach_image(conn, sid, key, payload.view)
+        conn.commit()
+    _clear_api_cache()
+    _delete_objects(old_keys)
     return img
 
 
-# ========== 导出（ZIP：Excel + 原图文件夹） ==========
 CHAR_EXPORT_COLS = [
     ("era", "时代"), ("type", "类型"), ("gender", "性别"), ("age", "年龄段"),
     ("persona", "人设"), ("body", "身材"), ("features", "特征"),
@@ -686,12 +551,11 @@ SCENE_EXPORT_COLS = [
 ]
 
 
-def _compress_image(path: str):
-    """读封面图转 JPEG（保持原分辨率，仅压缩），返回 openpyxl 图片对象。"""
+def _compress_image(data: bytes):
     from PIL import Image as PILImage
     from openpyxl.drawing.image import Image as XLImage
 
-    im = PILImage.open(path)
+    im = PILImage.open(io.BytesIO(data))
     if im.mode != "RGB":
         im = im.convert("RGB")
     buf = io.BytesIO()
@@ -701,13 +565,11 @@ def _compress_image(path: str):
 
 
 def _sanitize(name: str) -> str:
-    """净化字符串作文件名。"""
     s = re.sub(r'[/\\:*?"<>|\x00-\x1f]', "_", (name or "").strip())
     return (s or "未命名")[:60]
 
 
 def _export_filenames(rows: list, name_key: str) -> dict:
-    """为有封面图的行分配导出文件名（按名称、去重）。返回 {row_id: 文件名}。"""
     used: set = set()
     out: dict = {}
     for row in rows:
@@ -725,7 +587,6 @@ def _export_filenames(rows: list, name_key: str) -> dict:
 
 
 def _build_xlsx(rows: list, columns: list, title: str, imgname_map: dict) -> bytes:
-    """生成 xlsx：文字列 + 原图文件名 + 嵌入封面图（JPEG，原分辨率）。"""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
     from openpyxl.utils import get_column_letter
@@ -749,31 +610,26 @@ def _build_xlsx(rows: list, columns: list, title: str, imgname_map: dict) -> byt
             ws.column_dimensions[letter].width = 16
 
     for ri, row in enumerate(rows, start=2):
-        for ci, (key, label) in enumerate(columns, start=1):
+        for ci, (key, _label) in enumerate(columns, start=1):
             if key == "__image__":
                 continue
-            if key == "__imgname__":
-                val = imgname_map.get(row["id"], "")
-            else:
-                val = row.get(key, "") or ""
+            val = imgname_map.get(row["id"], "") if key == "__imgname__" else row.get(key, "") or ""
             cell = ws.cell(row=ri, column=ci, value=val)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
         placed = False
         if img_col:
             fn = row.get("cover_filename")
             if fn:
-                path = os.path.join(IMAGES_DIR, fn)
-                if os.path.exists(path):
-                    try:
-                        xi = _compress_image(path)
-                        ratio = (xi.height / xi.width) if xi.width else 0.66
-                        xi.width = 360
-                        xi.height = int(360 * ratio)
-                        ws.add_image(xi, f"{get_column_letter(img_col)}{ri}")
-                        ws.row_dimensions[ri].height = xi.height * 0.75
-                        placed = True
-                    except Exception:
-                        placed = False
+                try:
+                    xi = _compress_image(storage.get_bytes(fn))
+                    ratio = (xi.height / xi.width) if xi.width else 0.66
+                    xi.width = 360
+                    xi.height = int(360 * ratio)
+                    ws.add_image(xi, f"{get_column_letter(img_col)}{ri}")
+                    ws.row_dimensions[ri].height = xi.height * 0.75
+                    placed = True
+                except Exception:
+                    placed = False
             if not placed:
                 ws.cell(row=ri, column=img_col, value="（无图）")
                 ws.row_dimensions[ri].height = 56
@@ -783,10 +639,7 @@ def _build_xlsx(rows: list, columns: list, title: str, imgname_map: dict) -> byt
     return buf.getvalue()
 
 
-def _build_export_zip(
-    rows: list, columns: list, title: str, name_key: str
-) -> bytes:
-    """打包 ZIP：title.xlsx（嵌压缩图）+ 原图/ 文件夹（PNG 原图）。"""
+def _build_export_zip(rows: list, columns: list, title: str, name_key: str) -> bytes:
     imgname_map = _export_filenames(rows, name_key)
     xlsx = _build_xlsx(rows, columns, title, imgname_map)
     buf = io.BytesIO()
@@ -796,9 +649,10 @@ def _build_export_zip(
             name = imgname_map.get(row["id"])
             if not name:
                 continue
-            path = os.path.join(IMAGES_DIR, row["cover_filename"])
-            if os.path.exists(path):
-                zf.write(path, f"原图/{name}")
+            try:
+                zf.writestr(f"原图/{name}", storage.get_bytes(row["cover_filename"]))
+            except Exception:
+                continue
     return buf.getvalue()
 
 
@@ -806,9 +660,7 @@ def _zip_response(data: bytes, filename: str) -> Response:
     return Response(
         content=data,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
-        },
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
 
@@ -841,8 +693,19 @@ def export_scenes(
 
 @app.get("/api/health")
 def health():
+    db_ok = tos_ok = False
+    try:
+        db_ok = db_health_check()
+    except Exception:
+        db_ok = False
+    try:
+        tos_ok = storage.health_check()
+    except Exception:
+        tos_ok = False
     return {
-        "ok": True,
+        "ok": db_ok and tos_ok,
+        "db_ok": db_ok,
+        "tos_ok": tos_ok,
         "ai_configured": bool(os.getenv("OPENROUTER_API_KEY")),
     }
 

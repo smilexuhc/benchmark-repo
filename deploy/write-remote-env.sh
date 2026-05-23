@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_HOST="${REMOTE_HOST:-115.190.185.17}"
+REMOTE_USER="${REMOTE_USER:-root}"
+SSH_KEY="${SSH_KEY:-}"
+SSH_BATCH_MODE="${SSH_BATCH_MODE:-no}"
+APP_DIR="${APP_DIR:-/opt/benchmarkAsset}"
+
+TOS_HOST="${TOS_HOST:-benchmark-dev.tos-cn-beijing.volces.com}"
+TOS_BUCKET="${TOS_BUCKET:-${TOS_HOST%%.*}}"
+TOS_REGION="${TOS_REGION:-cn-beijing}"
+TOS_ENDPOINT="${TOS_ENDPOINT:-https://tos-s3-cn-beijing.volces.com}"
+
+OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL:-https://proxy.offerin.cn/openrouter/api/v1}"
+TEXT_MODEL="${TEXT_MODEL:-anthropic/claude-opus-4.7}"
+IMAGE_MODEL="${IMAGE_MODEL:-openai/gpt-5.4-image-2}"
+IMAGE_ASPECT_RATIO="${IMAGE_ASPECT_RATIO:-3:2}"
+IMAGE_SIZE="${IMAGE_SIZE:-2K}"
+RESTART_SERVICE="${RESTART_SERVICE:-1}"
+
+required_env=(DATABASE_URL TOS_ACCESS_KEY_ID TOS_SECRET_ACCESS_KEY)
+for name in "${required_env[@]}"; do
+  if [ -z "${!name:-}" ]; then
+    echo "Missing required environment variable: $name" >&2
+    exit 1
+  fi
+done
+
+SSH=(ssh -o BatchMode="$SSH_BATCH_MODE" "$REMOTE_USER@$REMOTE_HOST")
+if [ -n "$SSH_KEY" ]; then
+  SSH=(ssh -i "$SSH_KEY" -o BatchMode="$SSH_BATCH_MODE" "$REMOTE_USER@$REMOTE_HOST")
+fi
+
+"${SSH[@]}" \
+  "APP_DIR='$APP_DIR' DATABASE_URL='$DATABASE_URL' TOS_BUCKET='$TOS_BUCKET' TOS_REGION='$TOS_REGION' TOS_ENDPOINT='$TOS_ENDPOINT' TOS_ACCESS_KEY_ID='$TOS_ACCESS_KEY_ID' TOS_SECRET_ACCESS_KEY='$TOS_SECRET_ACCESS_KEY' OPENROUTER_API_KEY='${OPENROUTER_API_KEY:-}' OPENROUTER_BASE_URL='$OPENROUTER_BASE_URL' TEXT_MODEL='$TEXT_MODEL' IMAGE_MODEL='$IMAGE_MODEL' IMAGE_ASPECT_RATIO='$IMAGE_ASPECT_RATIO' IMAGE_SIZE='$IMAGE_SIZE' RESTART_SERVICE='$RESTART_SERVICE' bash -s" <<'REMOTE'
+set -euo pipefail
+
+mkdir -p "$APP_DIR/backend"
+cat > "$APP_DIR/backend/.env" <<EOF
+DATABASE_URL=$DATABASE_URL
+TOS_BUCKET=$TOS_BUCKET
+TOS_REGION=$TOS_REGION
+TOS_ENDPOINT=$TOS_ENDPOINT
+TOS_ACCESS_KEY_ID=$TOS_ACCESS_KEY_ID
+TOS_SECRET_ACCESS_KEY=$TOS_SECRET_ACCESS_KEY
+OPENROUTER_API_KEY=$OPENROUTER_API_KEY
+OPENROUTER_BASE_URL=$OPENROUTER_BASE_URL
+TEXT_MODEL=$TEXT_MODEL
+IMAGE_MODEL=$IMAGE_MODEL
+IMAGE_ASPECT_RATIO=$IMAGE_ASPECT_RATIO
+IMAGE_SIZE=$IMAGE_SIZE
+EOF
+chmod 600 "$APP_DIR/backend/.env"
+
+if [ "$RESTART_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl restart benchmark-asset
+fi
+
+echo "Wrote $APP_DIR/backend/.env"
+REMOTE

@@ -7,9 +7,8 @@
 用法： python fix_ethnicity.py
 """
 import re
-import sqlite3
 
-from db import DB_PATH, now
+from db import ASSET_CHARACTER, CHARACTER_FIELDS, all_assets, get_conn, init_db, update_data_fields
 
 # 类型 -> (人种词, 冠词)
 ETHNICITY = {
@@ -34,10 +33,12 @@ def has_ethnicity(prompt: str) -> bool:
 
 
 def main() -> None:
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT id, type, prompt FROM characters").fetchall()
+    init_db()
+    conn = get_conn()
+    rows = all_assets(conn, ASSET_CHARACTER, CHARACTER_FIELDS)
     changed = skipped = 0
-    for cid, ctype, prompt in rows:
+    for row in rows:
+        cid, ctype, prompt = row["id"], row["type"], row["prompt"]
         if ctype not in ETHNICITY or not (prompt or "").strip():
             continue
         if has_ethnicity(prompt):
@@ -50,10 +51,7 @@ def main() -> None:
             print(f"  ⚠ id{cid}: 未找到 close-up 短语，跳过")
             skipped += 1
             continue
-        conn.execute(
-            "UPDATE characters SET prompt=?, updated_at=? WHERE id=?",
-            (new, now(), cid),
-        )
+        update_data_fields(conn, ASSET_CHARACTER, cid, {"prompt": new})
         changed += 1
     conn.commit()
     conn.close()

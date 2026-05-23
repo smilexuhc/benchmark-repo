@@ -5,8 +5,8 @@ cd "$(dirname "$0")"
 if [ ! -d backend/.venv ]; then
   echo "首次运行：创建后端虚拟环境并安装依赖…"
   python3 -m venv backend/.venv
-  backend/.venv/bin/pip install -q -r backend/requirements.txt
 fi
+backend/.venv/bin/pip install -q -r backend/requirements.txt
 if [ ! -d frontend/node_modules ]; then
   echo "首次运行：安装前端依赖…"
   (cd frontend && npm install)

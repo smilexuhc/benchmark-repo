@@ -17,7 +17,7 @@ for _p in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
     os.environ.pop(_p, None)
 
 import ai
-from db import get_conn, init_db, now
+from db import ASSET_CHARACTER, find_asset_summaries_by_field, get_conn, init_db, insert_data, update_data_fields
 
 # (时代, 性别, 年龄段, 人设, 身材, 特征, 题材) —— 类型统一「动物拟人」
 ROWS = [
@@ -45,10 +45,7 @@ ROWS = [
 def main() -> None:
     init_db()
     conn = get_conn()
-    existing = {
-        r[0]: (r[1], r[2] or "")
-        for r in conn.execute("SELECT persona, id, prompt FROM characters")
-    }
+    existing = find_asset_summaries_by_field(conn, ASSET_CHARACTER, "persona")
     added = filled = skipped = failed = 0
 
     for era, gender, age, persona, body, features, genre in ROWS:
@@ -69,10 +66,7 @@ def main() -> None:
                 print(f"  ⚠ {persona}: 提示词失败（{e}）")
                 failed += 1
                 continue
-            conn.execute(
-                "UPDATE characters SET prompt=?, updated_at=? WHERE id=?",
-                (prompt, now(), cid),
-            )
+            update_data_fields(conn, ASSET_CHARACTER, cid, {"prompt": prompt})
             conn.commit()
             filled += 1
             print(f"  ✎ {persona}: 已补提示词")
@@ -84,13 +78,7 @@ def main() -> None:
             print(f"  ⚠ {persona}: 提示词失败（{e}），留空")
             prompt = ""
             failed += 1
-        conn.execute(
-            "INSERT INTO characters (era,type,gender,age,persona,body,features,"
-            "genre,prompt,description,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (era, "动物拟人", gender, age, persona, body, features, genre,
-             prompt, "", now(), now()),
-        )
+        insert_data(conn, ASSET_CHARACTER, char | {"prompt": prompt})
         conn.commit()
         existing[persona] = (None, prompt)
         added += 1

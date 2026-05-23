@@ -9,11 +9,24 @@ SSH_KEY="${SSH_KEY:-}"
 DOMAIN="${DOMAIN:-benchmark.jy-video.cn}"
 APP_DIR="${APP_DIR:-/opt/benchmarkAsset}"
 DATA_DIR="${DATA_DIR:-/data/benchmarkAsset}"
-SYNC_DATA="${SYNC_DATA:-1}"
 LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-admin@jy-video.cn}"
 BASIC_AUTH_USER="${BASIC_AUTH_USER:-benchmark}"
 BASIC_AUTH_PASSWORD="${BASIC_AUTH_PASSWORD:-benchmark}"
 BASIC_AUTH_OVERWRITE="${BASIC_AUTH_OVERWRITE:-0}"
+OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL:-https://proxy.offerin.cn/openrouter/api/v1}"
+TEXT_MODEL="${TEXT_MODEL:-anthropic/claude-opus-4.7}"
+IMAGE_MODEL="${IMAGE_MODEL:-openai/gpt-5.4-image-2}"
+IMAGE_ASPECT_RATIO="${IMAGE_ASPECT_RATIO:-3:2}"
+IMAGE_SIZE="${IMAGE_SIZE:-2K}"
+
+required_env=(DATABASE_URL TOS_BUCKET TOS_REGION TOS_ENDPOINT TOS_ACCESS_KEY_ID TOS_SECRET_ACCESS_KEY)
+for name in "${required_env[@]}"; do
+  if [ -z "${!name:-}" ]; then
+    echo "Missing required environment variable: $name" >&2
+    exit 1
+  fi
+done
 
 SSH=(ssh -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST")
 RSYNC_SSH=(ssh -o BatchMode=yes)
@@ -44,15 +57,8 @@ rsync -az --delete \
   --exclude '.DS_Store' \
   "$ROOT_DIR"/ "$REMOTE_USER@$REMOTE_HOST:$APP_DIR/"
 
-if [ "$SYNC_DATA" = "1" ]; then
-  echo "Syncing SQLite database and image data to $DATA_DIR..."
-  rsync -az --delete -e "$RSYNC_RSH" "$ROOT_DIR/backend/data/" "$REMOTE_USER@$REMOTE_HOST:$DATA_DIR/"
-else
-  echo "Skipping data sync because SYNC_DATA=$SYNC_DATA"
-fi
-
 echo "Installing/updating remote runtime and service..."
-"${SSH[@]}" "DOMAIN='$DOMAIN' APP_DIR='$APP_DIR' DATA_DIR='$DATA_DIR' LETSENCRYPT_EMAIL='$LETSENCRYPT_EMAIL' BASIC_AUTH_USER='$BASIC_AUTH_USER' BASIC_AUTH_PASSWORD='$BASIC_AUTH_PASSWORD' BASIC_AUTH_OVERWRITE='$BASIC_AUTH_OVERWRITE' bash -s" <<'REMOTE'
+"${SSH[@]}" "DOMAIN='$DOMAIN' APP_DIR='$APP_DIR' DATA_DIR='$DATA_DIR' LETSENCRYPT_EMAIL='$LETSENCRYPT_EMAIL' BASIC_AUTH_USER='$BASIC_AUTH_USER' BASIC_AUTH_PASSWORD='$BASIC_AUTH_PASSWORD' BASIC_AUTH_OVERWRITE='$BASIC_AUTH_OVERWRITE' DATABASE_URL='$DATABASE_URL' TOS_BUCKET='$TOS_BUCKET' TOS_REGION='$TOS_REGION' TOS_ENDPOINT='$TOS_ENDPOINT' TOS_ACCESS_KEY_ID='$TOS_ACCESS_KEY_ID' TOS_SECRET_ACCESS_KEY='$TOS_SECRET_ACCESS_KEY' OPENROUTER_API_KEY='$OPENROUTER_API_KEY' OPENROUTER_BASE_URL='$OPENROUTER_BASE_URL' TEXT_MODEL='$TEXT_MODEL' IMAGE_MODEL='$IMAGE_MODEL' IMAGE_ASPECT_RATIO='$IMAGE_ASPECT_RATIO' IMAGE_SIZE='$IMAGE_SIZE' bash -s" <<'REMOTE'
 set -euo pipefail
 
 apt-get update
@@ -67,6 +73,26 @@ if [ ! -d backend/.venv ]; then
 fi
 backend/.venv/bin/pip install -r backend/requirements.txt
 chmod +x deploy.sh start-production.sh
+
+cat > backend/.env <<EOF
+DATABASE_URL=$DATABASE_URL
+TOS_BUCKET=$TOS_BUCKET
+TOS_REGION=$TOS_REGION
+TOS_ENDPOINT=$TOS_ENDPOINT
+TOS_ACCESS_KEY_ID=$TOS_ACCESS_KEY_ID
+TOS_SECRET_ACCESS_KEY=$TOS_SECRET_ACCESS_KEY
+OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://proxy.offerin.cn/openrouter/api/v1}
+TEXT_MODEL=${TEXT_MODEL:-anthropic/claude-opus-4.7}
+IMAGE_MODEL=${IMAGE_MODEL:-openai/gpt-5.4-image-2}
+IMAGE_ASPECT_RATIO=${IMAGE_ASPECT_RATIO:-3:2}
+IMAGE_SIZE=${IMAGE_SIZE:-2K}
+EOF
+chmod 600 backend/.env
+
+cd backend
+.venv/bin/python migrate_schema.py
+cd ..
 
 if [ ! -f /etc/nginx/.benchmark-asset.htpasswd ] || [ "${BASIC_AUTH_OVERWRITE:-0}" = "1" ]; then
   htpasswd -bc /etc/nginx/.benchmark-asset.htpasswd "$BASIC_AUTH_USER" "$BASIC_AUTH_PASSWORD"

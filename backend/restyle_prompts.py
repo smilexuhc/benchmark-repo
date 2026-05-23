@@ -6,9 +6,7 @@
 
 用法： python restyle_prompts.py
 """
-import sqlite3
-
-from db import DB_PATH, now
+from db import ASSET_CHARACTER, CHARACTER_FIELDS, all_assets, get_conn, init_db, update_data_fields
 
 HUMAN_TYPES = {"亚洲人", "欧洲人", "非洲人", "拉美人", "混血"}
 
@@ -33,18 +31,17 @@ def restyle(prompt: str, is_human: bool) -> str:
 
 
 def main() -> None:
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT id, type, prompt FROM characters").fetchall()
+    init_db()
+    conn = get_conn()
+    rows = all_assets(conn, ASSET_CHARACTER, CHARACTER_FIELDS)
     changed = 0
-    for cid, ctype, prompt in rows:
+    for row in rows:
+        cid, ctype, prompt = row["id"], row["type"], row["prompt"]
         if not (prompt or "").strip():
             continue
         new = restyle(prompt, ctype in HUMAN_TYPES)
         if new != prompt:
-            conn.execute(
-                "UPDATE characters SET prompt=?, updated_at=? WHERE id=?",
-                (new, now(), cid),
-            )
+            update_data_fields(conn, ASSET_CHARACTER, cid, {"prompt": new})
             changed += 1
     conn.commit()
     conn.close()
