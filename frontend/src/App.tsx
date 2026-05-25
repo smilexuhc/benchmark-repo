@@ -6,6 +6,7 @@ import {
 } from './types'
 import { characterApi, sceneApi } from './api'
 import AssetLibrary from './components/AssetLibrary'
+import BenchmarkItemsPage from './components/BenchmarkItemsPage'
 import CharacterDrawer from './components/CharacterDrawer'
 import SceneDrawer from './components/SceneDrawer'
 import SceneViewColumn from './components/SceneViewColumn'
@@ -69,7 +70,7 @@ function sceneInfo(s: Scene) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<'character' | 'scene'>('character')
+  const [tab, setTab] = useState<'character' | 'scene' | 'benchmark'>('character')
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -88,10 +89,11 @@ export default function App() {
         <span style={{ fontSize: 16, fontWeight: 700 }}>资产库</span>
         <Segmented
           value={tab}
-          onChange={(v) => setTab(v as 'character' | 'scene')}
+          onChange={(v) => setTab(v as 'character' | 'scene' | 'benchmark')}
           options={[
             { label: '角色资产库', value: 'character' },
             { label: '场景资产库', value: 'scene' },
+            { label: '题目', value: 'benchmark' },
           ]}
         />
       </header>
@@ -107,7 +109,7 @@ export default function App() {
           newLabel="新建角色"
           Drawer={CharacterDrawer}
         />
-      ) : (
+      ) : tab === 'scene' ? (
         <AssetLibrary<Scene>
           api={sceneApi}
           filterFields={SCENE_FILTER_FIELDS}
@@ -121,6 +123,8 @@ export default function App() {
             <SceneViewColumn scene={s} onRefresh={refresh} />
           )}
         />
+      ) : (
+        <BenchmarkItemsPage />
       )}
     </div>
   )

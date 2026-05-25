@@ -30,6 +30,11 @@ POOL = ConnectionPool(
 
 ASSET_CHARACTER = "character"
 ASSET_SCENE = "scene"
+ASSET_AUDIO = "audio"
+ASSET_PROP = "prop"
+MEDIA_IMAGE = "image"
+MEDIA_AUDIO = "audio"
+MEDIA_ASSET_KINDS = {ASSET_CHARACTER, ASSET_SCENE, ASSET_AUDIO, ASSET_PROP}
 
 # 角色的结构化字段（与 CSV 列、前端筛选一一对应）
 CHARACTER_FIELDS = [
@@ -59,6 +64,73 @@ SCENE_FIELDS = [
 ]
 
 SCENE_FILTER_FIELDS = ["era", "scene_type", "genre", "mood"]
+
+VIDEO_BENCHMARK_FIELDS = [
+    "shot_type",
+    "task_type",
+    "question_type",
+    "scene",
+    "screen_size",
+    "character_image_asset",
+    "scene_image_asset",
+    "prop_image_asset",
+    "audio_input",
+    "video_input",
+    "text_prompt",
+    "judging_criteria",
+    "video_output",
+    "score",
+    "character_image_id",
+    "scene_image_id",
+    "prop_image_id",
+    "audio_input_id",
+]
+
+VIDEO_BENCHMARK_FILTER_FIELDS = [
+    "shot_type",
+    "task_type",
+    "question_type",
+    "scene",
+    "screen_size",
+]
+
+VIDEO_BENCHMARK_SEARCH_FIELDS = [
+    "shot_type",
+    "task_type",
+    "question_type",
+    "scene",
+    "screen_size",
+    "text_prompt",
+    "judging_criteria",
+    "video_output",
+]
+
+VIDEO_BENCHMARK_MEDIA_ROLES = {
+    "character_image": {
+        "id_field": "character_image_id",
+        "snapshot_field": "character_image_asset",
+        "media_type": MEDIA_IMAGE,
+        "asset_kind": ASSET_CHARACTER,
+    },
+    "scene_image": {
+        "id_field": "scene_image_id",
+        "snapshot_field": "scene_image_asset",
+        "media_type": MEDIA_IMAGE,
+        "asset_kind": ASSET_SCENE,
+    },
+    "prop_image": {
+        "id_field": "prop_image_id",
+        "snapshot_field": "prop_image_asset",
+        "media_type": MEDIA_IMAGE,
+        "asset_kind": None,
+    },
+    "audio_input": {
+        "id_field": "audio_input_id",
+        "snapshot_field": "audio_input",
+        "media_type": MEDIA_AUDIO,
+        "asset_kind": None,
+    },
+}
 
 GENRE_ORDER = [
     "现代-职场", "现代-校园", "现代-都市", "军事战争",
@@ -164,6 +236,44 @@ def _image_to_dict(row: dict) -> dict:
         "id": row["id"],
         "filename": row["object_key"],
         "source": row["source"],
+        "media_type": row.get("media_type", MEDIA_IMAGE),
+        "created_at": _normalize_time(row.get("created_at")),
+    }
+
+
+def _media_to_dict(row: dict | None) -> dict | None:
+    if row is None:
+        return None
+    object_key = row.get("object_key") or ""
+    data = row.get("data") or {}
+    title = (
+        data.get("title")
+        or data.get("persona")
+        or data.get("name")
+        or object_key.split("/")[-1]
+        or object_key
+    )
+    subtitle_parts = [
+        value for value in [
+            data.get("era"),
+            data.get("type"),
+            data.get("scene_type"),
+            data.get("genre"),
+            row.get("source"),
+        ] if value
+    ]
+    return {
+        "id": row["id"],
+        "asset_id": row["asset_id"],
+        "asset_kind": row["asset_kind"],
+        "object_key": object_key,
+        "filename": object_key,
+        "title": str(title),
+        "subtitle": " · ".join(str(part) for part in subtitle_parts),
+        "source": row["source"],
+        "media_type": row.get("media_type", MEDIA_IMAGE),
+        "url": f"/images/{object_key}" if object_key else "",
+        "thumbnail_url": f"/images/{object_key}" if object_key and row.get("media_type", MEDIA_IMAGE) == MEDIA_IMAGE else "",
         "created_at": _normalize_time(row.get("created_at")),
     }
 
@@ -174,10 +284,91 @@ def image_key(row: dict) -> str:
 
 def list_images(conn, asset_id: int) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, object_key, source, created_at FROM asset_images WHERE asset_id = %s ORDER BY id",
-        (asset_id,),
+        """
+        SELECT id, object_key, source, media_type, created_at
+        FROM asset_images
+        WHERE asset_id = %s AND media_type = %s
+        ORDER BY id
+        """,
+        (asset_id, MEDIA_IMAGE),
     ).fetchall()
     return [_image_to_dict(row) for row in rows]
+
+
+def get_media_asset(conn, media_id: int) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT
+            i.id, i.asset_id, a.kind AS asset_kind, i.object_key,
+            i.source, i.media_type, i.created_at, a.data
+        FROM asset_images i
+        JOIN assets a ON a.id = i.asset_id
+        WHERE i.id = %s
+        """,
+        (media_id,),
+    ).fetchone()
+    return _media_to_dict(row)
+
+
+def list_media_assets(
+    conn,
+    *,
+    media_type: str | None,
+    asset_kind: str | None,
+    q: str | None,
+    limit: int,
+    offset: int,
+) -> dict:
+    where = ["TRUE"]
+    params: list = []
+    if media_type:
+        where.append("i.media_type = %s")
+        params.append(media_type)
+    if asset_kind:
+        where.append("a.kind = %s")
+        params.append(asset_kind)
+    if q:
+        where.append(
+            """
+            (
+                i.object_key ILIKE %s
+                OR i.source ILIKE %s
+                OR a.kind ILIKE %s
+                OR a.data::text ILIKE %s
+            )
+            """
+        )
+        params.extend([f"%{q}%"] * 4)
+
+    where_sql = " AND ".join(where)
+    total_row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM asset_images i
+        JOIN assets a ON a.id = i.asset_id
+        WHERE {where_sql}
+        """,
+        params,
+    ).fetchone()
+    rows = conn.execute(
+        f"""
+        SELECT
+            i.id, i.asset_id, a.kind AS asset_kind, i.object_key,
+            i.source, i.media_type, i.created_at, a.data
+        FROM asset_images i
+        JOIN assets a ON a.id = i.asset_id
+        WHERE {where_sql}
+        ORDER BY i.id DESC
+        LIMIT %s OFFSET %s
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    return {
+        "items": [_media_to_dict(row) for row in rows],
+        "total": int(total_row["c"]),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 def _asset_dict_with_images(row: dict, fields: list[str], imgs: list[dict], view_sources: set[str] | None = None) -> dict:
@@ -218,6 +409,27 @@ def create_asset(conn, kind: str, fields: list[str], payload) -> int:
     return row["id"]
 
 
+def create_media_asset(conn, kind: str, media_type: str, object_key: str, title: str, source: str = "uploaded") -> dict:
+    if kind not in MEDIA_ASSET_KINDS:
+        raise ValueError("invalid_asset_kind")
+    if media_type not in {MEDIA_IMAGE, MEDIA_AUDIO}:
+        raise ValueError("invalid_media_type")
+    if media_type == MEDIA_AUDIO and kind != ASSET_AUDIO:
+        raise ValueError("audio_requires_audio_kind")
+    if media_type == MEDIA_IMAGE and kind == ASSET_AUDIO:
+        raise ValueError("image_cannot_use_audio_kind")
+    asset_id = insert_data(conn, kind, {"title": title, "name": title})
+    row = conn.execute(
+        """
+        INSERT INTO asset_images (asset_id, object_key, source, media_type, created_at)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (asset_id, object_key, source, media_type, now()),
+    ).fetchone()
+    return get_media_asset(conn, row["id"])
+
+
 def update_asset(conn, kind: str, asset_id: int, fields: list[str], payload) -> None:
     data = {field: getattr(payload, field, "") for field in fields}
     conn.execute(
@@ -243,11 +455,11 @@ def delete_asset(conn, kind: str, asset_id: int) -> list[str]:
 def attach_image(conn, asset_id: int, object_key: str, source: str) -> dict:
     row = conn.execute(
         """
-        INSERT INTO asset_images (asset_id, object_key, source, created_at)
-        VALUES (%s, %s, %s, %s)
-        RETURNING id, object_key, source, created_at
+        INSERT INTO asset_images (asset_id, object_key, source, media_type, created_at)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id, object_key, source, media_type, created_at
         """,
-        (asset_id, object_key, source, now()),
+        (asset_id, object_key, source, MEDIA_IMAGE, now()),
     ).fetchone()
     cover = conn.execute(
         "SELECT cover_image_id FROM assets WHERE id = %s",
@@ -431,6 +643,327 @@ def update_data_fields(conn, kind: str, asset_id: int, changes: dict) -> None:
 def all_assets(conn, kind: str, fields: list[str]) -> list[dict]:
     rows = conn.execute("SELECT * FROM assets WHERE kind = %s ORDER BY id", (kind,)).fetchall()
     return [_asset_row_to_dict(row, fields) for row in rows]
+
+
+def _media_object_key(
+    conn,
+    media_id: int | None,
+    *,
+    media_type: str,
+    asset_kind: str | None = None,
+) -> str:
+    if media_id is None:
+        return ""
+    media = get_media_asset(conn, media_id)
+    if media is None:
+        raise ValueError("media_not_found")
+    if media["media_type"] != media_type:
+        raise ValueError(f"media_type_mismatch:{media_type}")
+    if asset_kind and media["asset_kind"] != asset_kind:
+        raise ValueError(f"asset_kind_mismatch:{asset_kind}")
+    return media["object_key"]
+
+
+def _payload_media_ids(payload, role: str, fallback_id: int | None) -> list[int]:
+    value = getattr(payload, f"{role}_ids", None)
+    if value is None and role == "audio_input":
+        value = getattr(payload, "audio_input_media_ids", None)
+    if value is None:
+        value = [fallback_id] if fallback_id is not None else []
+    return [int(media_id) for media_id in value if media_id is not None]
+
+
+def _validate_media_ids(conn, media_ids: list[int], *, media_type: str, asset_kind: str | None = None) -> list[dict]:
+    media_items = []
+    for media_id in media_ids:
+        media = get_media_asset(conn, media_id)
+        if media is None:
+            raise ValueError("media_not_found")
+        if media["media_type"] != media_type:
+            raise ValueError(f"media_type_mismatch:{media_type}")
+        if asset_kind and media["asset_kind"] != asset_kind:
+            raise ValueError(f"asset_kind_mismatch:{asset_kind}")
+        media_items.append(media)
+    return media_items
+
+
+def prepare_video_benchmark_media(conn, payload, data: dict) -> dict[str, list[dict]]:
+    selected: dict[str, list[dict]] = {}
+    for role, config in VIDEO_BENCHMARK_MEDIA_ROLES.items():
+        media_ids = _payload_media_ids(payload, role, data.get(config["id_field"]))
+        media_items = _validate_media_ids(
+            conn,
+            media_ids,
+            media_type=config["media_type"],
+            asset_kind=config["asset_kind"],
+        )
+        selected[role] = media_items
+        data[config["id_field"]] = media_items[0]["id"] if media_items else None
+        data[config["snapshot_field"]] = "\n".join(item["object_key"] for item in media_items)
+    return selected
+
+
+def replace_video_benchmark_media_links(conn, item_id: int, selected: dict[str, list[dict]]) -> None:
+    conn.execute("DELETE FROM video_benchmark_media_links WHERE item_id = %s", (item_id,))
+    for role, media_items in selected.items():
+        for index, media in enumerate(media_items):
+            conn.execute(
+                """
+                INSERT INTO video_benchmark_media_links (item_id, role, media_id, sort_order, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (item_id, role, media_id)
+                DO UPDATE SET sort_order = EXCLUDED.sort_order
+                """,
+                (item_id, role, media["id"], index, now()),
+            )
+
+
+def _video_benchmark_media_map(conn, rows: list[dict]) -> dict[int, dict | None]:
+    ids: set[int] = set()
+    for row in rows:
+        for field in ("character_image_id", "scene_image_id", "prop_image_id", "audio_input_id"):
+            value = row.get(field)
+            if value is not None:
+                ids.add(value)
+    if not ids:
+        return {}
+    media_rows = conn.execute(
+        """
+        SELECT
+            i.id, i.asset_id, a.kind AS asset_kind, i.object_key,
+            i.source, i.media_type, i.created_at, a.data
+        FROM asset_images i
+        JOIN assets a ON a.id = i.asset_id
+        WHERE i.id = ANY(%s)
+        """,
+        (list(ids),),
+    ).fetchall()
+    return {row["id"]: _media_to_dict(row) for row in media_rows}
+
+
+def _video_benchmark_link_map(conn, item_ids: list[int]) -> dict[int, dict[str, list[dict]]]:
+    if not item_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT
+            l.item_id, l.role,
+            i.id, i.asset_id, a.kind AS asset_kind, i.object_key,
+            i.source, i.media_type, i.created_at, a.data,
+            l.sort_order
+        FROM video_benchmark_media_links l
+        JOIN asset_images i ON i.id = l.media_id
+        JOIN assets a ON a.id = i.asset_id
+        WHERE l.item_id = ANY(%s)
+        ORDER BY l.item_id, l.role, l.sort_order, l.id
+        """,
+        (item_ids,),
+    ).fetchall()
+    out: dict[int, dict[str, list[dict]]] = {}
+    for row in rows:
+        item = out.setdefault(row["item_id"], {role: [] for role in VIDEO_BENCHMARK_MEDIA_ROLES})
+        item[row["role"]].append(_media_to_dict(row))
+    return out
+
+
+def _attach_video_benchmark_media(
+    item: dict,
+    media_by_id: dict[int, dict | None],
+    links_by_item: dict[int, dict[str, list[dict]]] | None = None,
+) -> dict:
+    item_links = (links_by_item or {}).get(item["id"], {})
+    item["character_image"] = media_by_id.get(item.get("character_image_id"))
+    item["scene_image"] = media_by_id.get(item.get("scene_image_id"))
+    item["prop_image"] = media_by_id.get(item.get("prop_image_id"))
+    item["audio_input_media"] = media_by_id.get(item.get("audio_input_id"))
+    item["character_image_media"] = item_links.get("character_image") or ([item["character_image"]] if item["character_image"] else [])
+    item["scene_image_media"] = item_links.get("scene_image") or ([item["scene_image"]] if item["scene_image"] else [])
+    item["prop_image_media"] = item_links.get("prop_image") or ([item["prop_image"]] if item["prop_image"] else [])
+    item["audio_input_media_items"] = item_links.get("audio_input") or ([item["audio_input_media"]] if item["audio_input_media"] else [])
+    item["character_image_ids"] = [media["id"] for media in item["character_image_media"]]
+    item["scene_image_ids"] = [media["id"] for media in item["scene_image_media"]]
+    item["prop_image_ids"] = [media["id"] for media in item["prop_image_media"]]
+    item["audio_input_media_ids"] = [media["id"] for media in item["audio_input_media_items"]]
+    return item
+
+
+def _video_benchmark_row_to_dict(row: dict) -> dict:
+    out = {field: row.get(field) for field in VIDEO_BENCHMARK_FIELDS}
+    out.update(
+        {
+            "id": row["id"],
+            "created_at": _normalize_time(row.get("created_at")),
+            "updated_at": _normalize_time(row.get("updated_at")),
+        }
+    )
+    return out
+
+
+def _video_benchmark_payload(payload) -> dict:
+    data = {}
+    for field in VIDEO_BENCHMARK_FIELDS:
+        value = getattr(payload, field, None)
+        if field.endswith("_id") or field == "score":
+            data[field] = value
+        else:
+            data[field] = "" if value is None else value
+    return data
+
+
+def get_video_benchmark_item(conn, item_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM video_benchmark_items WHERE id = %s",
+        (item_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    item = _video_benchmark_row_to_dict(row)
+    return _attach_video_benchmark_media(
+        item,
+        _video_benchmark_media_map(conn, [row]),
+        _video_benchmark_link_map(conn, [row["id"]]),
+    )
+
+
+def create_video_benchmark_item(conn, payload) -> int:
+    data = _video_benchmark_payload(payload)
+    selected = prepare_video_benchmark_media(conn, payload, data)
+    row = conn.execute(
+        """
+        INSERT INTO video_benchmark_items (
+            shot_type, task_type, question_type, scene, screen_size,
+            character_image_asset, scene_image_asset, prop_image_asset,
+            audio_input, video_input, text_prompt, judging_criteria, video_output, score,
+            character_image_id, scene_image_id, prop_image_id, audio_input_id,
+            created_at, updated_at
+        )
+        VALUES (
+            %(shot_type)s, %(task_type)s, %(question_type)s, %(scene)s, %(screen_size)s,
+            %(character_image_asset)s, %(scene_image_asset)s, %(prop_image_asset)s,
+            %(audio_input)s, %(video_input)s, %(text_prompt)s, %(judging_criteria)s, %(video_output)s, %(score)s,
+            %(character_image_id)s, %(scene_image_id)s, %(prop_image_id)s, %(audio_input_id)s,
+            %(now)s, %(now)s
+        )
+        RETURNING id
+        """,
+        {**data, "now": now()},
+    ).fetchone()
+    replace_video_benchmark_media_links(conn, row["id"], selected)
+    return row["id"]
+
+
+def update_video_benchmark_item(conn, item_id: int, payload) -> bool:
+    data = _video_benchmark_payload(payload)
+    selected = prepare_video_benchmark_media(conn, payload, data)
+    result = conn.execute(
+        """
+        UPDATE video_benchmark_items
+        SET
+            shot_type = %(shot_type)s,
+            task_type = %(task_type)s,
+            question_type = %(question_type)s,
+            scene = %(scene)s,
+            screen_size = %(screen_size)s,
+            character_image_asset = %(character_image_asset)s,
+            scene_image_asset = %(scene_image_asset)s,
+            prop_image_asset = %(prop_image_asset)s,
+            audio_input = %(audio_input)s,
+            video_input = %(video_input)s,
+            text_prompt = %(text_prompt)s,
+            judging_criteria = %(judging_criteria)s,
+            video_output = %(video_output)s,
+            score = %(score)s,
+            character_image_id = %(character_image_id)s,
+            scene_image_id = %(scene_image_id)s,
+            prop_image_id = %(prop_image_id)s,
+            audio_input_id = %(audio_input_id)s,
+            updated_at = %(now)s
+        WHERE id = %(id)s
+        """,
+        {**data, "id": item_id, "now": now()},
+    )
+    if result.rowcount > 0:
+        replace_video_benchmark_media_links(conn, item_id, selected)
+    return result.rowcount > 0
+
+
+def delete_video_benchmark_item(conn, item_id: int) -> bool:
+    result = conn.execute(
+        "DELETE FROM video_benchmark_items WHERE id = %s",
+        (item_id,),
+    )
+    return result.rowcount > 0
+
+
+def _video_benchmark_filters_sql(filters: dict, q: str | None):
+    where = ["TRUE"]
+    params: list = []
+    for field in VIDEO_BENCHMARK_FILTER_FIELDS:
+        raw = filters.get(field)
+        if raw:
+            vals = [v for v in raw.split(",") if v]
+            if vals:
+                where.append(f"{field} = ANY(%s)")
+                params.append(vals)
+    if filters.get("score") is not None:
+        where.append("score = %s")
+        params.append(filters["score"])
+    if q:
+        clauses = [f"{field} ILIKE %s" for field in VIDEO_BENCHMARK_SEARCH_FIELDS]
+        where.append("(" + " OR ".join(clauses) + ")")
+        params.extend([f"%{q}%" for _ in VIDEO_BENCHMARK_SEARCH_FIELDS])
+    return " AND ".join(where), params
+
+
+def list_video_benchmark_items(
+    conn,
+    *,
+    limit: int,
+    offset: int,
+    q: str | None = None,
+    shot_type: str | None = None,
+    task_type: str | None = None,
+    question_type: str | None = None,
+    scene: str | None = None,
+    screen_size: str | None = None,
+    score: int | None = None,
+) -> dict:
+    where, params = _video_benchmark_filters_sql(
+        {
+            "shot_type": shot_type,
+            "task_type": task_type,
+            "question_type": question_type,
+            "scene": scene,
+            "screen_size": screen_size,
+            "score": score,
+        },
+        q,
+    )
+    total_row = conn.execute(
+        f"SELECT COUNT(*) AS c FROM video_benchmark_items WHERE {where}",
+        params,
+    ).fetchone()
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM video_benchmark_items
+        WHERE {where}
+        ORDER BY id DESC
+        LIMIT %s OFFSET %s
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    media_by_id = _video_benchmark_media_map(conn, rows)
+    links_by_item = _video_benchmark_link_map(conn, [row["id"] for row in rows])
+    return {
+        "items": [
+            _attach_video_benchmark_media(_video_benchmark_row_to_dict(row), media_by_id, links_by_item)
+            for row in rows
+        ],
+        "total": int(total_row["c"]),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 def health_check() -> bool:

@@ -7,6 +7,7 @@ import io
 import os
 import re
 import zipfile
+from pathlib import Path
 from time import monotonic
 from typing import Callable, Optional
 from urllib.parse import quote
@@ -20,10 +21,10 @@ for _p in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
            "http_proxy", "https_proxy", "all_proxy"):
     os.environ.pop(_p, None)
 
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 import ai
 import storage
@@ -37,18 +38,25 @@ from db import (
     asset_to_dict,
     attach_image,
     create_asset,
+    create_media_asset,
+    create_video_benchmark_item,
     delete_asset,
     delete_image as db_delete_image,
+    delete_video_benchmark_item,
     get_asset,
     get_conn,
     get_options as db_get_options,
+    get_video_benchmark_item,
     health_check as db_health_check,
     init_db,
     list_assets,
+    list_media_assets as db_list_media_assets,
+    list_video_benchmark_items,
     now,
     replace_source_images,
     set_cover as db_set_cover,
     update_asset,
+    update_video_benchmark_item,
 )
 
 app = FastAPI(title="角色与场景资产库")
@@ -126,6 +134,38 @@ class SceneViewReq(BaseModel):
     view: str  # reverse | multiview
 
 
+class VideoBenchmarkItemIn(BaseModel):
+    shot_type: str = ""
+    task_type: str = ""
+    question_type: str = ""
+    scene: str = ""
+    screen_size: str = ""
+    character_image_asset: str = ""
+    scene_image_asset: str = ""
+    prop_image_asset: str = ""
+    audio_input: str = ""
+    video_input: str = ""
+    text_prompt: str = ""
+    judging_criteria: str = ""
+    video_output: str = ""
+    score: Optional[int] = None
+    character_image_id: Optional[int] = None
+    scene_image_id: Optional[int] = None
+    prop_image_id: Optional[int] = None
+    audio_input_id: Optional[int] = None
+    character_image_ids: list[int] = []
+    scene_image_ids: list[int] = []
+    prop_image_ids: list[int] = []
+    audio_input_media_ids: list[int] = []
+
+    @field_validator("score")
+    @classmethod
+    def validate_score(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and not 0 <= value <= 5:
+            raise ValueError("score must be between 0 and 5")
+        return value
+
+
 VIEW_PROMPTS = {
     "reverse": (
         "The attached image is a reference of a scene environment. Create ONE "
@@ -167,6 +207,13 @@ def fetch_scene(conn, sid: int) -> dict:
     return asset_to_dict(conn, row, SCENE_FIELDS, VIEW_SOURCES)
 
 
+def fetch_video_benchmark_item(conn, item_id: int) -> dict:
+    item = get_video_benchmark_item(conn, item_id)
+    if item is None:
+        raise HTTPException(404, "视频 Benchmark 记录不存在")
+    return item
+
+
 def _delete_objects(keys: list[str]) -> None:
     for key in keys:
         try:
@@ -181,6 +228,13 @@ def _upload_image_bytes(data: bytes, ext: str = ".png", content_type: str = "ima
     return key
 
 
+def _upload_media_bytes(data: bytes, filename: str, content_type: str, media_type: str) -> str:
+    ext = Path(filename or "").suffix or (".mp3" if media_type == "audio" else ".png")
+    key = storage.new_object_key(ext, prefix=f"{media_type}s")
+    storage.put_bytes(key, data, content_type or "application/octet-stream")
+    return key
+
+
 @app.get("/images/{object_key:path}")
 def image_redirect(object_key: str):
     """Keep the old /images/... URL shape while serving private TOS objects."""
@@ -188,6 +242,122 @@ def image_redirect(object_key: str):
         return RedirectResponse(storage.object_url(object_key))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(404, f"图片不可用：{e}") from e
+
+
+@app.get("/api/video-benchmark-items")
+def list_video_benchmark_api(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    q: Optional[str] = None,
+    shot_type: Optional[str] = None,
+    task_type: Optional[str] = None,
+    question_type: Optional[str] = None,
+    scene: Optional[str] = None,
+    screen_size: Optional[str] = None,
+    score: Optional[int] = Query(None, ge=0, le=5),
+):
+    with get_conn() as conn:
+        return list_video_benchmark_items(
+            conn,
+            limit=limit,
+            offset=offset,
+            q=q,
+            shot_type=shot_type,
+            task_type=task_type,
+            question_type=question_type,
+            scene=scene,
+            screen_size=screen_size,
+            score=score,
+        )
+
+
+@app.get("/api/media-assets")
+def list_media_assets_api(
+    media_type: Optional[str] = Query(None, pattern="^(image|audio)$"),
+    asset_kind: Optional[str] = Query(None, pattern="^(character|scene|audio|prop)$"),
+    q: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    with get_conn() as conn:
+        return db_list_media_assets(
+            conn,
+            media_type=media_type,
+            asset_kind=asset_kind,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
+
+
+@app.post("/api/media-assets/upload")
+async def upload_media_asset_api(
+    file: UploadFile = File(...),
+    media_type: str = Query(..., pattern="^(image|audio)$"),
+    asset_kind: str = Query(..., pattern="^(character|scene|audio|prop)$"),
+    title: Optional[str] = None,
+):
+    if media_type == "image" and not (file.content_type or "").startswith("image/"):
+        raise HTTPException(422, "图片素材只能上传 image/* 文件")
+    if media_type == "audio" and not (file.content_type or "").startswith("audio/"):
+        raise HTTPException(422, "音频素材只能上传 audio/* 文件")
+    try:
+        key = _upload_media_bytes(
+            await file.read(),
+            file.filename or "",
+            file.content_type or "",
+            media_type,
+        )
+        with get_conn() as conn:
+            media = create_media_asset(
+                conn,
+                asset_kind,
+                media_type,
+                key,
+                title or file.filename or key,
+            )
+            conn.commit()
+            return media
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@app.get("/api/video-benchmark-items/{item_id}")
+def get_video_benchmark_api(item_id: int):
+    with get_conn() as conn:
+        return fetch_video_benchmark_item(conn, item_id)
+
+
+@app.post("/api/video-benchmark-items")
+def create_video_benchmark_api(payload: VideoBenchmarkItemIn):
+    with get_conn() as conn:
+        try:
+            item_id = create_video_benchmark_item(conn, payload)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        conn.commit()
+        return fetch_video_benchmark_item(conn, item_id)
+
+
+@app.put("/api/video-benchmark-items/{item_id}")
+def update_video_benchmark_api(item_id: int, payload: VideoBenchmarkItemIn):
+    with get_conn() as conn:
+        try:
+            if not update_video_benchmark_item(conn, item_id, payload):
+                raise HTTPException(404, "视频 Benchmark 记录不存在")
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        conn.commit()
+        return fetch_video_benchmark_item(conn, item_id)
+
+
+@app.delete("/api/video-benchmark-items/{item_id}")
+def delete_video_benchmark_api(item_id: int):
+    with get_conn() as conn:
+        if not delete_video_benchmark_item(conn, item_id):
+            raise HTTPException(404, "视频 Benchmark 记录不存在")
+        conn.commit()
+    return {"ok": True}
 
 
 @app.get("/api/options")

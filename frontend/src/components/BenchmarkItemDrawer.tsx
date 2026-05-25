@@ -1,0 +1,440 @@
+import { useEffect, useMemo, useState } from 'react'
+import {
+  App as AntApp,
+  Button,
+  Drawer,
+  Image,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Space,
+  Table,
+  Upload,
+} from 'antd'
+import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type {
+  MediaAsset,
+  MediaAssetListParams,
+  VideoBenchmarkItem,
+  VideoBenchmarkItemInput,
+} from '../types'
+import { emptyVideoBenchmarkItem, FIELD_LABELS } from '../types'
+import { imageUrl, mediaAssetsApi, videoBenchmarkApi } from '../api'
+
+const { TextArea } = Input
+
+interface Props {
+  open: boolean
+  item: VideoBenchmarkItem | null
+  onClose: () => void
+  onSaved: (item: VideoBenchmarkItem) => void | Promise<void>
+}
+
+const BASIC_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
+  'shot_type',
+  'task_type',
+  'question_type',
+  'scene',
+  'screen_size',
+]
+
+const LONG_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
+  'video_input',
+  'text_prompt',
+  'judging_criteria',
+  'video_output',
+]
+
+const MEDIA_FIELDS: {
+  idKey: keyof VideoBenchmarkItemInput
+  idsKey: keyof VideoBenchmarkItemInput
+  snapshotKey: keyof VideoBenchmarkItemInput
+  responseKey: keyof VideoBenchmarkItem
+  responseListKey: keyof VideoBenchmarkItem
+  label: string
+  params: MediaAssetListParams
+}[] = [
+  {
+    idKey: 'character_image_id',
+    idsKey: 'character_image_ids',
+    snapshotKey: 'character_image_asset',
+    responseKey: 'character_image',
+    responseListKey: 'character_image_media',
+    label: FIELD_LABELS.character_image_id,
+    params: { media_type: 'image', asset_kind: 'character' },
+  },
+  {
+    idKey: 'scene_image_id',
+    idsKey: 'scene_image_ids',
+    snapshotKey: 'scene_image_asset',
+    responseKey: 'scene_image',
+    responseListKey: 'scene_image_media',
+    label: FIELD_LABELS.scene_image_id,
+    params: { media_type: 'image', asset_kind: 'scene' },
+  },
+  {
+    idKey: 'prop_image_id',
+    idsKey: 'prop_image_ids',
+    snapshotKey: 'prop_image_asset',
+    responseKey: 'prop_image',
+    responseListKey: 'prop_image_media',
+    label: FIELD_LABELS.prop_image_id,
+    params: { media_type: 'image', asset_kind: 'prop' },
+  },
+  {
+    idKey: 'audio_input_id',
+    idsKey: 'audio_input_media_ids',
+    snapshotKey: 'audio_input',
+    responseKey: 'audio_input_media',
+    responseListKey: 'audio_input_media_items',
+    label: FIELD_LABELS.audio_input_id,
+    params: { media_type: 'audio' },
+  },
+]
+
+function pickInput(item: VideoBenchmarkItem): VideoBenchmarkItemInput {
+  return {
+    shot_type: item.shot_type,
+    task_type: item.task_type,
+    question_type: item.question_type,
+    scene: item.scene,
+    screen_size: item.screen_size,
+    character_image_asset: item.character_image_asset,
+    scene_image_asset: item.scene_image_asset,
+    prop_image_asset: item.prop_image_asset,
+    audio_input: item.audio_input,
+    video_input: item.video_input,
+    text_prompt: item.text_prompt,
+    judging_criteria: item.judging_criteria,
+    video_output: item.video_output,
+    score: item.score,
+    character_image_id: item.character_image_id,
+    scene_image_id: item.scene_image_id,
+    prop_image_id: item.prop_image_id,
+    audio_input_id: item.audio_input_id,
+    character_image_ids: item.character_image_ids,
+    scene_image_ids: item.scene_image_ids,
+    prop_image_ids: item.prop_image_ids,
+    audio_input_media_ids: item.audio_input_media_ids,
+  }
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 13, color: '#5a6068', marginBottom: 6 }}>
+        {label}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function mediaLabel(media: MediaAsset) {
+  return media.title || media.object_key.split('/').pop() || media.object_key
+}
+
+function mediaMeta(media: MediaAsset) {
+  const name = media.object_key.split('/').pop() || media.object_key
+  return [media.subtitle, `#${media.id}`, name].filter(Boolean).join(' · ')
+}
+
+function MediaThumb({ media }: { media: MediaAsset }) {
+  if (media.media_type === 'image') {
+    return <Image src={imageUrl(media.object_key)} width={80} height={52} style={{ objectFit: 'cover', background: '#f4f5f7', borderRadius: 4 }} />
+  }
+  return (
+    <div style={{ width: 80, height: 52, borderRadius: 4, background: '#f4f5f7', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', fontSize: 12 }}>
+      AUDIO
+    </div>
+  )
+}
+
+function MediaPicker({
+  label,
+  params,
+  selected,
+  onChange,
+}: {
+  label: string
+  params: MediaAssetListParams
+  selected: MediaAsset[]
+  onChange: (media: MediaAsset[]) => void
+}) {
+  const { message } = AntApp.useApp()
+  const [open, setOpen] = useState(false)
+  const [options, setOptions] = useState<MediaAsset[]>([])
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [uploading, setUploading] = useState(false)
+
+  const load = async (nextPage = page, q = query) => {
+    setLoading(true)
+    try {
+      const data = await mediaAssetsApi.list({
+        ...params,
+        q: q.trim() || undefined,
+        limit: 20,
+        offset: (nextPage - 1) * 20,
+      })
+      setOptions(data.items)
+      setTotal(data.total)
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (open) load(1, query)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, params.asset_kind, params.media_type])
+
+  const mergedItems = useMemo(() => {
+    const map = new Map<number, MediaAsset>()
+    selected.forEach((media) => map.set(media.id, media))
+    options.forEach((option) => map.set(option.id, option))
+    return Array.from(map.values())
+  }, [options, selected])
+
+  const columns: ColumnsType<MediaAsset> = [
+    {
+      title: '预览',
+      dataIndex: 'object_key',
+      width: 104,
+      render: (_, media) => <MediaThumb media={media} />,
+    },
+    {
+      title: '素材',
+      dataIndex: 'title',
+      render: (_, media) => (
+        <div>
+          <div style={{ fontWeight: 600 }}>{mediaLabel(media)}</div>
+          <div style={{ fontSize: 12, color: '#8a8f99' }}>{mediaMeta(media)}</div>
+        </div>
+      ),
+    },
+  ]
+
+  const pagination: TablePaginationConfig = {
+    current: page,
+    pageSize: 20,
+    total,
+    showSizeChanger: false,
+  }
+
+  return (
+    <Field label={label}>
+      <Space style={{ marginBottom: 8 }} wrap>
+        <Button onClick={() => setOpen(true)}>选择素材</Button>
+        <Upload
+          showUploadList={false}
+          accept={params.media_type === 'audio' ? 'audio/*' : 'image/*'}
+          beforeUpload={async (file) => {
+            setUploading(true)
+            try {
+              const uploaded = await mediaAssetsApi.upload(params, file as unknown as File)
+              setOptions((current) => [uploaded, ...current.filter((media) => media.id !== uploaded.id)])
+              onChange([...selected.filter((media) => media.id !== uploaded.id), uploaded])
+              message.success('素材已上传并选中')
+            } catch (e) {
+              message.error((e as Error).message)
+            } finally {
+              setUploading(false)
+            }
+            return false
+          }}
+        >
+          <Button loading={uploading}>上传</Button>
+        </Upload>
+      </Space>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {selected.length === 0 && <span style={{ color: '#b8bdc4' }}>未选择</span>}
+        {selected.map((media) => (
+          <div key={media.id} style={{ width: 126 }}>
+            <MediaThumb media={media} />
+            <div style={{ marginTop: 4, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {mediaLabel(media)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <Modal
+        open={open}
+        title={`选择${label}`}
+        width={920}
+        onCancel={() => setOpen(false)}
+        onOk={() => setOpen(false)}
+        okText="完成"
+        cancelText="关闭"
+      >
+        <Input.Search
+          allowClear
+          placeholder={`搜索${label}`}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onSearch={(value) => {
+            setPage(1)
+            load(1, value)
+          }}
+          style={{ marginBottom: 12 }}
+        />
+        <Table<MediaAsset>
+          rowKey="id"
+          loading={loading}
+          dataSource={mergedItems}
+          columns={columns}
+          pagination={pagination}
+          rowSelection={{
+            selectedRowKeys: selected.map((media) => media.id),
+            preserveSelectedRowKeys: true,
+            onChange: (_, rows) => onChange(rows),
+          }}
+          scroll={{ y: 480 }}
+          onChange={(nextPagination) => {
+            const nextPage = nextPagination.current || 1
+            setPage(nextPage)
+            load(nextPage, query)
+          }}
+        />
+      </Modal>
+    </Field>
+  )
+}
+
+export default function BenchmarkItemDrawer({
+  open, item, onClose, onSaved,
+}: Props) {
+  const { message } = AntApp.useApp()
+  const [form, setForm] = useState<VideoBenchmarkItemInput>(emptyVideoBenchmarkItem)
+  const [selectedMedia, setSelectedMedia] = useState<Record<string, MediaAsset[]>>({})
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setForm(item ? pickInput(item) : { ...emptyVideoBenchmarkItem })
+    setSelectedMedia({
+      character_image_ids: item?.character_image_media || [],
+      scene_image_ids: item?.scene_image_media || [],
+      prop_image_ids: item?.prop_image_media || [],
+      audio_input_media_ids: item?.audio_input_media_items || [],
+    })
+  }, [open, item])
+
+  const set = <K extends keyof VideoBenchmarkItemInput>(
+    key: K,
+    value: VideoBenchmarkItemInput[K],
+  ) => setForm((current) => ({ ...current, [key]: value }))
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const saved = item
+        ? await videoBenchmarkApi.update(item.id, form)
+        : await videoBenchmarkApi.create(form)
+      await onSaved(saved)
+      message.success(item ? '题目已保存' : '题目已创建')
+      onClose()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const setMediaList = (
+    idKey: keyof VideoBenchmarkItemInput,
+    idsKey: keyof VideoBenchmarkItemInput,
+    snapshotKey: keyof VideoBenchmarkItemInput,
+    media: MediaAsset[],
+  ) => {
+    set(idKey, (media[0]?.id ?? null) as VideoBenchmarkItemInput[typeof idKey])
+    set(idsKey, media.map((item) => item.id) as VideoBenchmarkItemInput[typeof idsKey])
+    set(snapshotKey, media.map((item) => item.object_key).join('\n') as VideoBenchmarkItemInput[typeof snapshotKey])
+    setSelectedMedia((current) => ({ ...current, [idsKey]: media }))
+  }
+
+  return (
+    <Drawer
+      open={open}
+      onClose={onClose}
+      width={760}
+      title={item ? `编辑题目 #${item.id}` : '新建题目'}
+      footer={
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={onClose}>关闭</Button>
+          <Button type="primary" loading={saving} onClick={save}>
+            {item ? '保存' : '创建'}
+          </Button>
+        </div>
+      }
+    >
+      <div
+        style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 16 }}
+      >
+        {BASIC_FIELDS.map((key) => (
+          <Field key={key} label={FIELD_LABELS[key]}>
+            <Input
+              value={form[key] as string}
+              onChange={(e) => set(key, e.target.value)}
+              placeholder={`输入${FIELD_LABELS[key]}`}
+              allowClear
+            />
+          </Field>
+        ))}
+        <Field label={FIELD_LABELS.score}>
+          <Select
+            value={form.score}
+            onChange={(value) => set('score', value)}
+            options={[
+              { value: null, label: '未评分' },
+              { value: 0, label: '0 分' },
+              { value: 1, label: '1 分' },
+              { value: 2, label: '2 分' },
+              { value: 3, label: '3 分' },
+              { value: 4, label: '4 分' },
+              { value: 5, label: '5 分' },
+            ]}
+            style={{ width: '100%' }}
+          />
+        </Field>
+        <Field label="快速输入 Score">
+          <InputNumber
+            min={0}
+            max={5}
+            precision={0}
+            value={form.score}
+            onChange={(value) => set('score', value)}
+            placeholder="0-5，留空为未评分"
+            style={{ width: '100%' }}
+          />
+        </Field>
+      </div>
+
+      {MEDIA_FIELDS.map((field) => (
+        <MediaPicker
+          key={field.idsKey}
+          label={field.label}
+          params={field.params}
+          selected={selectedMedia[field.idsKey] || []}
+          onChange={(media) => setMediaList(field.idKey, field.idsKey, field.snapshotKey, media)}
+        />
+      ))}
+
+      {LONG_FIELDS.map((key) => (
+        <Field key={key} label={FIELD_LABELS[key]}>
+          <TextArea
+            value={form[key] as string}
+            onChange={(e) => set(key, e.target.value)}
+            autoSize={{ minRows: key === 'text_prompt' || key === 'judging_criteria' || key === 'video_output' ? 4 : 2, maxRows: 8 }}
+            placeholder={`输入${FIELD_LABELS[key]}，可填写 URL、object key、文件名或备注`}
+          />
+        </Field>
+      ))}
+    </Drawer>
+  )
+}

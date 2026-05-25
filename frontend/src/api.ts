@@ -1,6 +1,8 @@
 import type {
   Character, CharacterInput, Scene, SceneInput, SceneViewKind,
-  CharImage, Filters, Options,
+  CharImage, Filters, MediaAsset, MediaAssetListParams, MediaAssetListResponse, Options,
+  VideoBenchmarkItem, VideoBenchmarkItemInput, VideoBenchmarkListParams,
+  VideoBenchmarkListResponse,
 } from './types'
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -41,6 +43,16 @@ function filterQuery(filters: Filters, q: string): string {
   if (q.trim()) params.set('q', q.trim())
   const qs = params.toString()
   return qs ? `?${qs}` : ''
+}
+
+function queryString(params: object): string {
+  const qs = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    qs.set(key, String(value))
+  })
+  const out = qs.toString()
+  return out ? `?${out}` : ''
 }
 
 /** 角色与场景共用的资产 API（增删改查 / AI / 图片） */
@@ -120,6 +132,39 @@ export const sceneApi = {
   /** 图生图：以场景封面图为参考，生成正反打 / 4视图 */
   generateView: (id: number, view: SceneViewKind) =>
     req<CharImage>(`/api/scenes/${id}/generate-view`, json({ view })),
+}
+
+export const videoBenchmarkApi = {
+  list: (params: VideoBenchmarkListParams) =>
+    req<VideoBenchmarkListResponse>(
+      `/api/video-benchmark-items${queryString(params)}`,
+    ),
+  get: (id: number) => req<VideoBenchmarkItem>(`/api/video-benchmark-items/${id}`),
+  create: (data: VideoBenchmarkItemInput) =>
+    req<VideoBenchmarkItem>('/api/video-benchmark-items', json(data)),
+  update: (id: number, data: VideoBenchmarkItemInput) =>
+    req<VideoBenchmarkItem>(
+      `/api/video-benchmark-items/${id}`,
+      { ...json(data), method: 'PUT' },
+    ),
+}
+
+export const mediaAssetsApi = {
+  list: (params: MediaAssetListParams) =>
+    req<MediaAssetListResponse>(`/api/media-assets${queryString(params)}`),
+  upload: (params: MediaAssetListParams, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const query = queryString({
+      media_type: params.media_type,
+      asset_kind: params.asset_kind,
+      title: file.name,
+    })
+    return req<MediaAsset>(`/api/media-assets/upload${query}`, {
+      method: 'POST',
+      body: fd,
+    })
+  },
 }
 
 export const imageUrl = (filename: string) => `/images/${filename}`

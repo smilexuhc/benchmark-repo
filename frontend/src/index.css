@@ -34,3 +34,30 @@ body {
   background: #d0d3d8;
   border-radius: 3px;
 }
+
+.benchmark-detail-box {
+  max-height: 96px;
+  padding: 8px 10px;
+  border: 1px solid #edf0f3;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.benchmark-items-table .ant-table-thead > tr > th {
+  padding: 6px 8px !important;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.benchmark-items-table .ant-table-tbody > tr > td {
+  padding: 5px 8px !important;
+  vertical-align: middle;
+}
+
+.benchmark-items-table .ant-table-cell::before {
+  display: none;
+}
+
+.benchmark-items-table .ant-image {
+  display: block;
+}
