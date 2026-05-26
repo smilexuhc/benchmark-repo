@@ -773,7 +773,9 @@ def _export_filenames(rows: list, name_key: str) -> dict:
     return out
 
 
-def _build_xlsx(rows: list, columns: list, title: str, imgname_map: dict) -> bytes:
+def _build_xlsx(
+    rows: list, columns: list, title: str, imgname_map: dict, image_bytes_map: dict
+) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font
     from openpyxl.utils import get_column_letter
@@ -808,7 +810,7 @@ def _build_xlsx(rows: list, columns: list, title: str, imgname_map: dict) -> byt
             fn = row.get("cover_filename")
             if fn:
                 try:
-                    xi = _compress_image(storage.get_bytes(fn))
+                    xi = _compress_image(image_bytes_map[fn])
                     ratio = (xi.height / xi.width) if xi.width else 0.66
                     xi.width = 360
                     xi.height = int(360 * ratio)
@@ -828,7 +830,16 @@ def _build_xlsx(rows: list, columns: list, title: str, imgname_map: dict) -> byt
 
 def _build_export_zip(rows: list, columns: list, title: str, name_key: str) -> bytes:
     imgname_map = _export_filenames(rows, name_key)
-    xlsx = _build_xlsx(rows, columns, title, imgname_map)
+    image_bytes_map = {}
+    for row in rows:
+        fn = row.get("cover_filename")
+        if not fn or fn in image_bytes_map:
+            continue
+        try:
+            image_bytes_map[fn] = storage.get_bytes(fn)
+        except Exception:
+            continue
+    xlsx = _build_xlsx(rows, columns, title, imgname_map, image_bytes_map)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{title}.xlsx", xlsx)
@@ -836,10 +847,9 @@ def _build_export_zip(rows: list, columns: list, title: str, name_key: str) -> b
             name = imgname_map.get(row["id"])
             if not name:
                 continue
-            try:
-                zf.writestr(f"原图/{name}", storage.get_bytes(row["cover_filename"]))
-            except Exception:
-                continue
+            data = image_bytes_map.get(row["cover_filename"])
+            if data:
+                zf.writestr(f"原图/{name}", data)
     return buf.getvalue()
 
 
