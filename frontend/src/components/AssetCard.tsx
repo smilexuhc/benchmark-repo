@@ -3,6 +3,7 @@ import { Tag, Button, Image, Spin, Checkbox, App as AntApp } from 'antd'
 import type { ReactNode } from 'react'
 import type { AssetBase, CharImage } from '../types'
 import { imageUrl, downloadImage } from '../api'
+import LazyImage from './LazyImage'
 
 interface Props {
   item: AssetBase
@@ -174,6 +175,7 @@ export default function AssetCard({
         ) : item.cover_filename ? (
           <>
             <Image.PreviewGroup
+              items={item.images.map((img) => imageUrl(img.filename))}
               preview={{
                 toolbarRender: (node, info2) => {
                   const img = item.images[info2.current]
@@ -202,23 +204,16 @@ export default function AssetCard({
                 },
               }}
             >
-              {item.images.map((img) => (
-                <Image
-                  key={img.id}
-                  src={imageUrl(img.filename)}
-                  loading="lazy"
-                  style={
-                    img.filename === item.cover_filename
-                      ? {
-                          maxHeight: 196,
-                          maxWidth: 356,
-                          objectFit: 'contain',
-                          borderRadius: 4,
-                        }
-                      : { display: 'none' }
-                  }
-                />
-              ))}
+              <LazyImage
+                src={imageUrl(item.cover_filename)}
+                style={{
+                  maxHeight: 196,
+                  maxWidth: 356,
+                  objectFit: 'contain',
+                  borderRadius: 4,
+                }}
+                placeholderStyle={{ width: 356, height: 196 }}
+              />
             </Image.PreviewGroup>
             <div
               style={{

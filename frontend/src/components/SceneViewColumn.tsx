@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button, Image, Spin, App as AntApp } from 'antd'
 import type { Scene, SceneViewKind } from '../types'
 import { sceneApi, imageUrl, downloadImage } from '../api'
+import LazyImage from './LazyImage'
 
 const VIEWS: { kind: SceneViewKind; label: string }[] = [
   { kind: 'reverse', label: '正反打' },
@@ -66,9 +67,8 @@ export default function SceneViewColumn({ scene, onRefresh }: Props) {
                   </div>
                 ) : img ? (
                   <>
-                    <Image
+                    <LazyImage
                       src={imageUrl(img.filename)}
-                      loading="lazy"
                       style={{
                         width: '100%',
                         height: 96,
@@ -76,6 +76,7 @@ export default function SceneViewColumn({ scene, onRefresh }: Props) {
                         borderRadius: 4,
                         background: '#f4f5f7',
                       }}
+                      placeholderStyle={{ width: '100%', height: 96 }}
                     />
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <Button
