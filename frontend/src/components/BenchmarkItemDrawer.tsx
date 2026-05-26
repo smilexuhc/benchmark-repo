@@ -260,29 +260,46 @@ function MediaPicker({
     showSizeChanger: false,
   }
 
+  const uploadFiles = async (files: File[]) => {
+    if (!files.length) return
+    setUploading(true)
+    try {
+      const uploadedItems: MediaAsset[] = []
+      for (const file of files) {
+        uploadedItems.push(await mediaAssetsApi.upload(params, file))
+      }
+      setOptions((current) => {
+        const uploadedIds = new Set(uploadedItems.map((media) => media.id))
+        return [...uploadedItems, ...current.filter((media) => !uploadedIds.has(media.id))]
+      })
+      const selectedMap = new Map<number, MediaAsset>()
+      selected.forEach((media) => selectedMap.set(media.id, media))
+      uploadedItems.forEach((media) => selectedMap.set(media.id, media))
+      onChange(Array.from(selectedMap.values()))
+      message.success(`已上传并选中 ${uploadedItems.length} 个素材`)
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
   return (
     <Field label={label}>
       <Space style={{ marginBottom: 8 }} wrap>
         <Button onClick={() => setOpen(true)}>选择素材</Button>
         <Upload
+          multiple
           showUploadList={false}
           accept={params.media_type === 'video' ? 'video/*' : params.media_type === 'audio' ? 'audio/*' : 'image/*'}
-          beforeUpload={async (file) => {
-            setUploading(true)
-            try {
-              const uploaded = await mediaAssetsApi.upload(params, file as unknown as File)
-              setOptions((current) => [uploaded, ...current.filter((media) => media.id !== uploaded.id)])
-              onChange([...selected.filter((media) => media.id !== uploaded.id), uploaded])
-              message.success('素材已上传并选中')
-            } catch (e) {
-              message.error((e as Error).message)
-            } finally {
-              setUploading(false)
+          beforeUpload={(file, fileList) => {
+            if (file.uid === fileList[fileList.length - 1]?.uid) {
+              uploadFiles(fileList as unknown as File[])
             }
             return false
           }}
         >
-          <Button loading={uploading}>上传</Button>
+          <Button loading={uploading}>上传素材</Button>
         </Upload>
       </Space>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
