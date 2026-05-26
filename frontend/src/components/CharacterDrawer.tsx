@@ -75,7 +75,7 @@ export default function CharacterDrawer({
     if (!cur) return
     modal.confirm({
       title: '删除该角色？',
-      content: '角色及其全部图片将一并删除，不可恢复。',
+      content: '角色及其图片将从列表中移除。',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',

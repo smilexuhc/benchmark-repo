@@ -74,7 +74,7 @@ export default function SceneDrawer({
     if (!cur) return
     modal.confirm({
       title: '删除该场景？',
-      content: '场景及其全部图片将一并删除，不可恢复。',
+      content: '场景及其图片将从列表中移除。',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
