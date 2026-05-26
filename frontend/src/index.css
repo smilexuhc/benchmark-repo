@@ -85,3 +85,6 @@ body {
   border-color: #d0d5dc;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
+.bench-cascader-popup .ant-cascader-menu {
+  height: 280px;
+}

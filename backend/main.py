@@ -53,6 +53,8 @@ from db import (
     list_media_assets as db_list_media_assets,
     list_video_benchmark_items,
     now,
+    video_benchmark_stats,
+    video_benchmark_today_new_count,
     replace_source_images,
     set_cover as db_set_cover,
     update_asset,
@@ -138,6 +140,7 @@ class VideoBenchmarkItemIn(BaseModel):
     shot_type: str = ""
     task_type: str = ""
     question_type: str = ""
+    manual_tag: str = ""
     scene: str = ""
     screen_size: str = ""
     character_image_asset: str = ""
@@ -259,6 +262,7 @@ def list_video_benchmark_api(
     scene: Optional[str] = None,
     screen_size: Optional[str] = None,
     score: Optional[int] = Query(None, ge=0, le=5),
+    manual_tag: Optional[str] = None,
 ):
     with get_conn() as conn:
         return list_video_benchmark_items(
@@ -272,7 +276,17 @@ def list_video_benchmark_api(
             scene=scene,
             screen_size=screen_size,
             score=score,
+            manual_tag=manual_tag,
         )
+
+
+@app.get("/api/video-benchmark-items/stats")
+def video_benchmark_items_stats_api():
+    with get_conn() as conn:
+        return {
+            "groups": video_benchmark_stats(conn),
+            "today_new": video_benchmark_today_new_count(conn),
+        }
 
 
 @app.get("/api/media-assets")

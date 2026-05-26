@@ -71,6 +71,7 @@ VIDEO_BENCHMARK_FIELDS = [
     "shot_type",
     "task_type",
     "question_type",
+    "manual_tag",
     "scene",
     "screen_size",
     "character_image_asset",
@@ -102,6 +103,7 @@ VIDEO_BENCHMARK_SEARCH_FIELDS = [
     "shot_type",
     "task_type",
     "question_type",
+    "manual_tag",
     "scene",
     "screen_size",
     "video_input",
@@ -858,7 +860,7 @@ def create_video_benchmark_item(conn, payload) -> int:
     row = conn.execute(
         """
         INSERT INTO video_benchmark_items (
-            shot_type, task_type, question_type, scene, screen_size,
+            shot_type, task_type, question_type, manual_tag, scene, screen_size,
             character_image_asset, scene_image_asset, prop_image_asset,
             audio_input, video_input, text_prompt, judging_criteria, video_output, score,
             character_image_id, scene_image_id, prop_image_id, audio_input_id,
@@ -866,7 +868,7 @@ def create_video_benchmark_item(conn, payload) -> int:
             created_at, updated_at
         )
         VALUES (
-            %(shot_type)s, %(task_type)s, %(question_type)s, %(scene)s, %(screen_size)s,
+            %(shot_type)s, %(task_type)s, %(question_type)s, %(manual_tag)s, %(scene)s, %(screen_size)s,
             %(character_image_asset)s, %(scene_image_asset)s, %(prop_image_asset)s,
             %(audio_input)s, %(video_input)s, %(text_prompt)s, %(judging_criteria)s, %(video_output)s, %(score)s,
             %(character_image_id)s, %(scene_image_id)s, %(prop_image_id)s, %(audio_input_id)s,
@@ -891,6 +893,7 @@ def update_video_benchmark_item(conn, item_id: int, payload) -> bool:
             shot_type = %(shot_type)s,
             task_type = %(task_type)s,
             question_type = %(question_type)s,
+            manual_tag = %(manual_tag)s,
             scene = %(scene)s,
             screen_size = %(screen_size)s,
             character_image_asset = %(character_image_asset)s,
@@ -939,6 +942,10 @@ def _video_benchmark_filters_sql(filters: dict, q: str | None):
     if filters.get("score") is not None:
         where.append("score = %s")
         params.append(filters["score"])
+    manual_tag = filters.get("manual_tag")
+    if manual_tag:
+        where.append("manual_tag ILIKE %s")
+        params.append(f"%{manual_tag}%")
     if q:
         clauses = [f"{field} ILIKE %s" for field in VIDEO_BENCHMARK_SEARCH_FIELDS]
         where.append("(" + " OR ".join(clauses) + ")")
@@ -958,6 +965,7 @@ def list_video_benchmark_items(
     scene: str | None = None,
     screen_size: str | None = None,
     score: int | None = None,
+    manual_tag: str | None = None,
 ) -> dict:
     where, params = _video_benchmark_filters_sql(
         {
@@ -967,6 +975,7 @@ def list_video_benchmark_items(
             "scene": scene,
             "screen_size": screen_size,
             "score": score,
+            "manual_tag": manual_tag,
         },
         q,
     )
@@ -995,6 +1004,38 @@ def list_video_benchmark_items(
         "limit": limit,
         "offset": offset,
     }
+
+
+def video_benchmark_stats(conn) -> list[dict]:
+    """按 (shot_type, question_type) 统计题数；包含 question_type 为空的项。"""
+    rows = conn.execute(
+        """
+        SELECT shot_type, question_type, COUNT(*) AS c
+          FROM video_benchmark_items
+         GROUP BY shot_type, question_type
+        """
+    ).fetchall()
+    return [
+        {
+            "shot_type": row["shot_type"],
+            "question_type": row["question_type"],
+            "count": int(row["c"]),
+        }
+        for row in rows
+    ]
+
+
+def video_benchmark_today_new_count(conn, tz: str = "Asia/Shanghai") -> int:
+    """统计指定时区"今天"创建的题目数。"""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+          FROM video_benchmark_items
+         WHERE (created_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date
+        """,
+        (tz, tz),
+    ).fetchone()
+    return int(row["c"])
 
 
 def health_check() -> bool:
