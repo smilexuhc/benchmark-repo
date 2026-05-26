@@ -32,9 +32,11 @@ ASSET_CHARACTER = "character"
 ASSET_SCENE = "scene"
 ASSET_AUDIO = "audio"
 ASSET_PROP = "prop"
+ASSET_VIDEO = "video"
 MEDIA_IMAGE = "image"
 MEDIA_AUDIO = "audio"
-MEDIA_ASSET_KINDS = {ASSET_CHARACTER, ASSET_SCENE, ASSET_AUDIO, ASSET_PROP}
+MEDIA_VIDEO = "video"
+MEDIA_ASSET_KINDS = {ASSET_CHARACTER, ASSET_SCENE, ASSET_AUDIO, ASSET_PROP, ASSET_VIDEO}
 
 # 角色的结构化字段（与 CSV 列、前端筛选一一对应）
 CHARACTER_FIELDS = [
@@ -84,6 +86,8 @@ VIDEO_BENCHMARK_FIELDS = [
     "scene_image_id",
     "prop_image_id",
     "audio_input_id",
+    "video_input_id",
+    "video_output_id",
 ]
 
 VIDEO_BENCHMARK_FILTER_FIELDS = [
@@ -100,6 +104,7 @@ VIDEO_BENCHMARK_SEARCH_FIELDS = [
     "question_type",
     "scene",
     "screen_size",
+    "video_input",
     "text_prompt",
     "judging_criteria",
     "video_output",
@@ -128,6 +133,18 @@ VIDEO_BENCHMARK_MEDIA_ROLES = {
         "id_field": "audio_input_id",
         "snapshot_field": "audio_input",
         "media_type": MEDIA_AUDIO,
+        "asset_kind": None,
+    },
+    "video_input": {
+        "id_field": "video_input_id",
+        "snapshot_field": "video_input",
+        "media_type": MEDIA_VIDEO,
+        "asset_kind": None,
+    },
+    "video_output": {
+        "id_field": "video_output_id",
+        "snapshot_field": "video_output",
+        "media_type": MEDIA_VIDEO,
         "asset_kind": None,
     },
 }
@@ -412,12 +429,16 @@ def create_asset(conn, kind: str, fields: list[str], payload) -> int:
 def create_media_asset(conn, kind: str, media_type: str, object_key: str, title: str, source: str = "uploaded") -> dict:
     if kind not in MEDIA_ASSET_KINDS:
         raise ValueError("invalid_asset_kind")
-    if media_type not in {MEDIA_IMAGE, MEDIA_AUDIO}:
+    if media_type not in {MEDIA_IMAGE, MEDIA_AUDIO, MEDIA_VIDEO}:
         raise ValueError("invalid_media_type")
     if media_type == MEDIA_AUDIO and kind != ASSET_AUDIO:
         raise ValueError("audio_requires_audio_kind")
+    if media_type == MEDIA_VIDEO and kind != ASSET_VIDEO:
+        raise ValueError("video_requires_video_kind")
     if media_type == MEDIA_IMAGE and kind == ASSET_AUDIO:
         raise ValueError("image_cannot_use_audio_kind")
+    if media_type == MEDIA_IMAGE and kind == ASSET_VIDEO:
+        raise ValueError("image_cannot_use_video_kind")
     asset_id = insert_data(conn, kind, {"title": title, "name": title})
     row = conn.execute(
         """
@@ -721,7 +742,7 @@ def replace_video_benchmark_media_links(conn, item_id: int, selected: dict[str, 
 def _video_benchmark_media_map(conn, rows: list[dict]) -> dict[int, dict | None]:
     ids: set[int] = set()
     for row in rows:
-        for field in ("character_image_id", "scene_image_id", "prop_image_id", "audio_input_id"):
+        for field in ("character_image_id", "scene_image_id", "prop_image_id", "audio_input_id", "video_input_id", "video_output_id"):
             value = row.get(field)
             if value is not None:
                 ids.add(value)
@@ -776,14 +797,20 @@ def _attach_video_benchmark_media(
     item["scene_image"] = media_by_id.get(item.get("scene_image_id"))
     item["prop_image"] = media_by_id.get(item.get("prop_image_id"))
     item["audio_input_media"] = media_by_id.get(item.get("audio_input_id"))
+    item["video_input_media"] = media_by_id.get(item.get("video_input_id"))
+    item["video_output_media"] = media_by_id.get(item.get("video_output_id"))
     item["character_image_media"] = item_links.get("character_image") or ([item["character_image"]] if item["character_image"] else [])
     item["scene_image_media"] = item_links.get("scene_image") or ([item["scene_image"]] if item["scene_image"] else [])
     item["prop_image_media"] = item_links.get("prop_image") or ([item["prop_image"]] if item["prop_image"] else [])
     item["audio_input_media_items"] = item_links.get("audio_input") or ([item["audio_input_media"]] if item["audio_input_media"] else [])
+    item["video_input_media_items"] = item_links.get("video_input") or ([item["video_input_media"]] if item["video_input_media"] else [])
+    item["video_output_media_items"] = item_links.get("video_output") or ([item["video_output_media"]] if item["video_output_media"] else [])
     item["character_image_ids"] = [media["id"] for media in item["character_image_media"]]
     item["scene_image_ids"] = [media["id"] for media in item["scene_image_media"]]
     item["prop_image_ids"] = [media["id"] for media in item["prop_image_media"]]
     item["audio_input_media_ids"] = [media["id"] for media in item["audio_input_media_items"]]
+    item["video_input_ids"] = [media["id"] for media in item["video_input_media_items"]]
+    item["video_output_ids"] = [media["id"] for media in item["video_output_media_items"]]
     return item
 
 
@@ -835,6 +862,7 @@ def create_video_benchmark_item(conn, payload) -> int:
             character_image_asset, scene_image_asset, prop_image_asset,
             audio_input, video_input, text_prompt, judging_criteria, video_output, score,
             character_image_id, scene_image_id, prop_image_id, audio_input_id,
+            video_input_id, video_output_id,
             created_at, updated_at
         )
         VALUES (
@@ -842,6 +870,7 @@ def create_video_benchmark_item(conn, payload) -> int:
             %(character_image_asset)s, %(scene_image_asset)s, %(prop_image_asset)s,
             %(audio_input)s, %(video_input)s, %(text_prompt)s, %(judging_criteria)s, %(video_output)s, %(score)s,
             %(character_image_id)s, %(scene_image_id)s, %(prop_image_id)s, %(audio_input_id)s,
+            %(video_input_id)s, %(video_output_id)s,
             %(now)s, %(now)s
         )
         RETURNING id
@@ -877,6 +906,8 @@ def update_video_benchmark_item(conn, item_id: int, payload) -> bool:
             scene_image_id = %(scene_image_id)s,
             prop_image_id = %(prop_image_id)s,
             audio_input_id = %(audio_input_id)s,
+            video_input_id = %(video_input_id)s,
+            video_output_id = %(video_output_id)s,
             updated_at = %(now)s
         WHERE id = %(id)s
         """,

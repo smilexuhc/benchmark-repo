@@ -13,20 +13,13 @@ LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-admin@jy-video.cn}"
 BASIC_AUTH_USER="${BASIC_AUTH_USER:-benchmark}"
 BASIC_AUTH_PASSWORD="${BASIC_AUTH_PASSWORD:-benchmark}"
 BASIC_AUTH_OVERWRITE="${BASIC_AUTH_OVERWRITE:-0}"
+BACKEND_ENV_OVERWRITE="${BACKEND_ENV_OVERWRITE:-0}"
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
 OPENROUTER_BASE_URL="${OPENROUTER_BASE_URL:-https://proxy.offerin.cn/openrouter/api/v1}"
 TEXT_MODEL="${TEXT_MODEL:-anthropic/claude-opus-4.7}"
 IMAGE_MODEL="${IMAGE_MODEL:-openai/gpt-5.4-image-2}"
 IMAGE_ASPECT_RATIO="${IMAGE_ASPECT_RATIO:-3:2}"
 IMAGE_SIZE="${IMAGE_SIZE:-2K}"
-
-required_env=(DATABASE_URL TOS_BUCKET TOS_REGION TOS_ENDPOINT TOS_ACCESS_KEY_ID TOS_SECRET_ACCESS_KEY)
-for name in "${required_env[@]}"; do
-  if [ -z "${!name:-}" ]; then
-    echo "Missing required environment variable: $name" >&2
-    exit 1
-  fi
-done
 
 SSH=(ssh -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST")
 RSYNC_SSH=(ssh -o BatchMode=yes)
@@ -50,6 +43,7 @@ echo "Syncing application code..."
 rsync -az --delete \
   -e "$RSYNC_RSH" \
   --exclude 'backend/.venv/' \
+  --exclude 'backend/.env' \
   --exclude 'backend/data/' \
   --exclude 'frontend/node_modules/' \
   --exclude 'frontend/dev.log' \
@@ -58,7 +52,7 @@ rsync -az --delete \
   "$ROOT_DIR"/ "$REMOTE_USER@$REMOTE_HOST:$APP_DIR/"
 
 echo "Installing/updating remote runtime and service..."
-"${SSH[@]}" "DOMAIN='$DOMAIN' APP_DIR='$APP_DIR' DATA_DIR='$DATA_DIR' LETSENCRYPT_EMAIL='$LETSENCRYPT_EMAIL' BASIC_AUTH_USER='$BASIC_AUTH_USER' BASIC_AUTH_PASSWORD='$BASIC_AUTH_PASSWORD' BASIC_AUTH_OVERWRITE='$BASIC_AUTH_OVERWRITE' DATABASE_URL='$DATABASE_URL' TOS_BUCKET='$TOS_BUCKET' TOS_REGION='$TOS_REGION' TOS_ENDPOINT='$TOS_ENDPOINT' TOS_ACCESS_KEY_ID='$TOS_ACCESS_KEY_ID' TOS_SECRET_ACCESS_KEY='$TOS_SECRET_ACCESS_KEY' OPENROUTER_API_KEY='$OPENROUTER_API_KEY' OPENROUTER_BASE_URL='$OPENROUTER_BASE_URL' TEXT_MODEL='$TEXT_MODEL' IMAGE_MODEL='$IMAGE_MODEL' IMAGE_ASPECT_RATIO='$IMAGE_ASPECT_RATIO' IMAGE_SIZE='$IMAGE_SIZE' bash -s" <<'REMOTE'
+"${SSH[@]}" "DOMAIN='$DOMAIN' APP_DIR='$APP_DIR' DATA_DIR='$DATA_DIR' LETSENCRYPT_EMAIL='$LETSENCRYPT_EMAIL' BASIC_AUTH_USER='$BASIC_AUTH_USER' BASIC_AUTH_PASSWORD='$BASIC_AUTH_PASSWORD' BASIC_AUTH_OVERWRITE='$BASIC_AUTH_OVERWRITE' BACKEND_ENV_OVERWRITE='$BACKEND_ENV_OVERWRITE' DATABASE_URL='$DATABASE_URL' TOS_BUCKET='$TOS_BUCKET' TOS_REGION='$TOS_REGION' TOS_ENDPOINT='$TOS_ENDPOINT' TOS_ACCESS_KEY_ID='$TOS_ACCESS_KEY_ID' TOS_SECRET_ACCESS_KEY='$TOS_SECRET_ACCESS_KEY' OPENROUTER_API_KEY='$OPENROUTER_API_KEY' OPENROUTER_BASE_URL='$OPENROUTER_BASE_URL' TEXT_MODEL='$TEXT_MODEL' IMAGE_MODEL='$IMAGE_MODEL' IMAGE_ASPECT_RATIO='$IMAGE_ASPECT_RATIO' IMAGE_SIZE='$IMAGE_SIZE' bash -s" <<'REMOTE'
 set -euo pipefail
 
 apt-get update
@@ -74,7 +68,17 @@ fi
 backend/.venv/bin/pip install -r backend/requirements.txt
 chmod +x deploy.sh start-production.sh
 
-cat > backend/.env <<EOF
+if [ ! -f backend/.env ] || [ "${BACKEND_ENV_OVERWRITE:-0}" = "1" ]; then
+  required_env=(DATABASE_URL TOS_BUCKET TOS_REGION TOS_ENDPOINT TOS_ACCESS_KEY_ID TOS_SECRET_ACCESS_KEY)
+  for name in "${required_env[@]}"; do
+    if [ -z "${!name:-}" ]; then
+      echo "Missing required environment variable: $name" >&2
+      echo "Remote backend/.env does not exist or BACKEND_ENV_OVERWRITE=1 was set, so the deploy script must create backend/.env." >&2
+      exit 1
+    fi
+  done
+
+  cat > backend/.env <<EOF
 DATABASE_URL=$DATABASE_URL
 TOS_BUCKET=$TOS_BUCKET
 TOS_REGION=$TOS_REGION
@@ -88,7 +92,10 @@ IMAGE_MODEL=${IMAGE_MODEL:-openai/gpt-5.4-image-2}
 IMAGE_ASPECT_RATIO=${IMAGE_ASPECT_RATIO:-3:2}
 IMAGE_SIZE=${IMAGE_SIZE:-2K}
 EOF
-chmod 600 backend/.env
+  chmod 600 backend/.env
+else
+  echo "Preserving existing backend/.env (set BACKEND_ENV_OVERWRITE=1 to rewrite it)."
+fi
 
 cd backend
 .venv/bin/python migrate_schema.py

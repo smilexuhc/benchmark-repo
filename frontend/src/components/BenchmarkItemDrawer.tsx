@@ -40,10 +40,8 @@ const BASIC_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
 ]
 
 const LONG_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
-  'video_input',
   'text_prompt',
   'judging_criteria',
-  'video_output',
 ]
 
 const MEDIA_FIELDS: {
@@ -89,7 +87,25 @@ const MEDIA_FIELDS: {
     responseKey: 'audio_input_media',
     responseListKey: 'audio_input_media_items',
     label: FIELD_LABELS.audio_input_id,
-    params: { media_type: 'audio' },
+    params: { media_type: 'audio', asset_kind: 'audio' },
+  },
+  {
+    idKey: 'video_input_id',
+    idsKey: 'video_input_ids',
+    snapshotKey: 'video_input',
+    responseKey: 'video_input_media',
+    responseListKey: 'video_input_media_items',
+    label: FIELD_LABELS.video_input_id,
+    params: { media_type: 'video', asset_kind: 'video' },
+  },
+  {
+    idKey: 'video_output_id',
+    idsKey: 'video_output_ids',
+    snapshotKey: 'video_output',
+    responseKey: 'video_output_media',
+    responseListKey: 'video_output_media_items',
+    label: FIELD_LABELS.video_output_id,
+    params: { media_type: 'video', asset_kind: 'video' },
   },
 ]
 
@@ -113,10 +129,14 @@ function pickInput(item: VideoBenchmarkItem): VideoBenchmarkItemInput {
     scene_image_id: item.scene_image_id,
     prop_image_id: item.prop_image_id,
     audio_input_id: item.audio_input_id,
+    video_input_id: item.video_input_id,
+    video_output_id: item.video_output_id,
     character_image_ids: item.character_image_ids,
     scene_image_ids: item.scene_image_ids,
     prop_image_ids: item.prop_image_ids,
     audio_input_media_ids: item.audio_input_media_ids,
+    video_input_ids: item.video_input_ids,
+    video_output_ids: item.video_output_ids,
   }
 }
 
@@ -143,6 +163,19 @@ function mediaMeta(media: MediaAsset) {
 function MediaThumb({ media }: { media: MediaAsset }) {
   if (media.media_type === 'image') {
     return <Image src={imageUrl(media.object_key)} width={80} height={52} style={{ objectFit: 'cover', background: '#f4f5f7', borderRadius: 4 }} />
+  }
+  if (media.media_type === 'video') {
+    return (
+      <video
+        src={imageUrl(media.object_key)}
+        width={80}
+        height={52}
+        muted
+        playsInline
+        preload="metadata"
+        style={{ objectFit: 'cover', background: '#f4f5f7', borderRadius: 4, display: 'block' }}
+      />
+    )
   }
   return (
     <div style={{ width: 80, height: 52, borderRadius: 4, background: '#f4f5f7', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', fontSize: 12 }}>
@@ -227,29 +260,46 @@ function MediaPicker({
     showSizeChanger: false,
   }
 
+  const uploadFiles = async (files: File[]) => {
+    if (!files.length) return
+    setUploading(true)
+    try {
+      const uploadedItems: MediaAsset[] = []
+      for (const file of files) {
+        uploadedItems.push(await mediaAssetsApi.upload(params, file))
+      }
+      setOptions((current) => {
+        const uploadedIds = new Set(uploadedItems.map((media) => media.id))
+        return [...uploadedItems, ...current.filter((media) => !uploadedIds.has(media.id))]
+      })
+      const selectedMap = new Map<number, MediaAsset>()
+      selected.forEach((media) => selectedMap.set(media.id, media))
+      uploadedItems.forEach((media) => selectedMap.set(media.id, media))
+      onChange(Array.from(selectedMap.values()))
+      message.success(`已上传并选中 ${uploadedItems.length} 个素材`)
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
   return (
     <Field label={label}>
       <Space style={{ marginBottom: 8 }} wrap>
         <Button onClick={() => setOpen(true)}>选择素材</Button>
         <Upload
+          multiple
           showUploadList={false}
-          accept={params.media_type === 'audio' ? 'audio/*' : 'image/*'}
-          beforeUpload={async (file) => {
-            setUploading(true)
-            try {
-              const uploaded = await mediaAssetsApi.upload(params, file as unknown as File)
-              setOptions((current) => [uploaded, ...current.filter((media) => media.id !== uploaded.id)])
-              onChange([...selected.filter((media) => media.id !== uploaded.id), uploaded])
-              message.success('素材已上传并选中')
-            } catch (e) {
-              message.error((e as Error).message)
-            } finally {
-              setUploading(false)
+          accept={params.media_type === 'video' ? 'video/*' : params.media_type === 'audio' ? 'audio/*' : 'image/*'}
+          beforeUpload={(file, fileList) => {
+            if (file.uid === fileList[fileList.length - 1]?.uid) {
+              uploadFiles(fileList as unknown as File[])
             }
             return false
           }}
         >
-          <Button loading={uploading}>上传</Button>
+          <Button loading={uploading}>上传素材</Button>
         </Upload>
       </Space>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -322,6 +372,8 @@ export default function BenchmarkItemDrawer({
       scene_image_ids: item?.scene_image_media || [],
       prop_image_ids: item?.prop_image_media || [],
       audio_input_media_ids: item?.audio_input_media_items || [],
+      video_input_ids: item?.video_input_media_items || [],
+      video_output_ids: item?.video_output_media_items || [],
     })
   }, [open, item])
 
@@ -430,7 +482,7 @@ export default function BenchmarkItemDrawer({
           <TextArea
             value={form[key] as string}
             onChange={(e) => set(key, e.target.value)}
-            autoSize={{ minRows: key === 'text_prompt' || key === 'judging_criteria' || key === 'video_output' ? 4 : 2, maxRows: 8 }}
+            autoSize={{ minRows: key === 'text_prompt' || key === 'judging_criteria' ? 4 : 2, maxRows: 8 }}
             placeholder={`输入${FIELD_LABELS[key]}，可填写 URL、object key、文件名或备注`}
           />
         </Field>

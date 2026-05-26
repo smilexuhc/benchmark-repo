@@ -153,10 +153,14 @@ class VideoBenchmarkItemIn(BaseModel):
     scene_image_id: Optional[int] = None
     prop_image_id: Optional[int] = None
     audio_input_id: Optional[int] = None
+    video_input_id: Optional[int] = None
+    video_output_id: Optional[int] = None
     character_image_ids: list[int] = []
     scene_image_ids: list[int] = []
     prop_image_ids: list[int] = []
     audio_input_media_ids: list[int] = []
+    video_input_ids: list[int] = []
+    video_output_ids: list[int] = []
 
     @field_validator("score")
     @classmethod
@@ -229,7 +233,7 @@ def _upload_image_bytes(data: bytes, ext: str = ".png", content_type: str = "ima
 
 
 def _upload_media_bytes(data: bytes, filename: str, content_type: str, media_type: str) -> str:
-    ext = Path(filename or "").suffix or (".mp3" if media_type == "audio" else ".png")
+    ext = Path(filename or "").suffix or (".mp4" if media_type == "video" else ".mp3" if media_type == "audio" else ".png")
     key = storage.new_object_key(ext, prefix=f"{media_type}s")
     storage.put_bytes(key, data, content_type or "application/octet-stream")
     return key
@@ -273,8 +277,8 @@ def list_video_benchmark_api(
 
 @app.get("/api/media-assets")
 def list_media_assets_api(
-    media_type: Optional[str] = Query(None, pattern="^(image|audio)$"),
-    asset_kind: Optional[str] = Query(None, pattern="^(character|scene|audio|prop)$"),
+    media_type: Optional[str] = Query(None, pattern="^(image|audio|video)$"),
+    asset_kind: Optional[str] = Query(None, pattern="^(character|scene|audio|prop|video)$"),
     q: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -293,14 +297,16 @@ def list_media_assets_api(
 @app.post("/api/media-assets/upload")
 async def upload_media_asset_api(
     file: UploadFile = File(...),
-    media_type: str = Query(..., pattern="^(image|audio)$"),
-    asset_kind: str = Query(..., pattern="^(character|scene|audio|prop)$"),
+    media_type: str = Query(..., pattern="^(image|audio|video)$"),
+    asset_kind: str = Query(..., pattern="^(character|scene|audio|prop|video)$"),
     title: Optional[str] = None,
 ):
     if media_type == "image" and not (file.content_type or "").startswith("image/"):
         raise HTTPException(422, "图片素材只能上传 image/* 文件")
     if media_type == "audio" and not (file.content_type or "").startswith("audio/"):
         raise HTTPException(422, "音频素材只能上传 audio/* 文件")
+    if media_type == "video" and not (file.content_type or "").startswith("video/"):
+        raise HTTPException(422, "视频素材只能上传 video/* 文件")
     try:
         key = _upload_media_bytes(
             await file.read(),

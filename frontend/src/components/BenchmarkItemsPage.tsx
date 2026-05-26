@@ -34,10 +34,8 @@ const FILTER_FIELDS: FilterKey[] = [
 ]
 
 const DETAIL_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
-  'video_input',
   'text_prompt',
   'judging_criteria',
-  'video_output',
 ]
 
 const MEDIA_DETAIL_FIELDS: {
@@ -50,6 +48,8 @@ const MEDIA_DETAIL_FIELDS: {
   { label: FIELD_LABELS.scene_image_id, mediaKey: 'scene_image', mediaListKey: 'scene_image_media', snapshotKey: 'scene_image_asset' },
   { label: FIELD_LABELS.prop_image_id, mediaKey: 'prop_image', mediaListKey: 'prop_image_media', snapshotKey: 'prop_image_asset' },
   { label: FIELD_LABELS.audio_input_id, mediaKey: 'audio_input_media', mediaListKey: 'audio_input_media_items', snapshotKey: 'audio_input' },
+  { label: FIELD_LABELS.video_input_id, mediaKey: 'video_input_media', mediaListKey: 'video_input_media_items', snapshotKey: 'video_input' },
+  { label: FIELD_LABELS.video_output_id, mediaKey: 'video_output_media', mediaListKey: 'video_output_media_items', snapshotKey: 'video_output' },
 ]
 
 function compactText(value: string, fallback = '-') {
@@ -115,6 +115,16 @@ function MediaDetail({ media, snapshot }: { media: MediaAsset | null; snapshot: 
       </div>
     )
   }
+  if (media?.media_type === 'video') {
+    return (
+      <div>
+        <video controls src={imageUrl(media.object_key)} style={{ width: 180, maxWidth: '100%', borderRadius: 4, background: '#f4f5f7' }} />
+        <div style={{ marginTop: 6, fontSize: 12 }}>
+          #{media.id} · {mediaName(media)}
+        </div>
+      </div>
+    )
+  }
   return <>{compactText(snapshot, '暂无')}</>
 }
 
@@ -130,6 +140,17 @@ function MediaPreviewStack({ items }: { items: MediaAsset[] }) {
             width={120}
             height={84}
             style={{ objectFit: 'cover', borderRadius: 4, background: '#f4f5f7' }}
+          />
+        ) : media.media_type === 'video' ? (
+          <video
+            key={media.id}
+            src={imageUrl(media.object_key)}
+            width={120}
+            height={84}
+            muted
+            playsInline
+            preload="metadata"
+            style={{ objectFit: 'cover', borderRadius: 4, background: '#f4f5f7', display: 'block' }}
           />
         ) : (
           <div
@@ -298,6 +319,18 @@ export default function BenchmarkItemsPage() {
         render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
       },
       {
+        title: FIELD_LABELS.video_input,
+        dataIndex: 'video_input_media_items',
+        width: 400,
+        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
+      },
+      {
+        title: FIELD_LABELS.video_output,
+        dataIndex: 'video_output_media_items',
+        width: 400,
+        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
+      },
+      {
         title: FIELD_LABELS.score,
         dataIndex: 'score',
         width: 130,
@@ -403,7 +436,7 @@ export default function BenchmarkItemsPage() {
           dataSource={items}
           columns={columns}
           pagination={pagination}
-          scroll={{ x: 2800, y: 'calc(100vh - 196px)' }}
+          scroll={{ x: 3600, y: 'calc(100vh - 196px)' }}
           locale={{
             emptyText: (
               <Empty description="没有符合条件的题目" style={{ padding: 24 }} />

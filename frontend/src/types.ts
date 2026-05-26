@@ -9,13 +9,13 @@ export interface CharImage {
 export interface MediaAsset {
   id: number
   asset_id: number
-  asset_kind: 'character' | 'scene' | 'audio' | 'prop'
+  asset_kind: 'character' | 'scene' | 'audio' | 'prop' | 'video'
   object_key: string
   filename: string
   title: string
   subtitle: string
   source: string
-  media_type: 'image' | 'audio'
+  media_type: 'image' | 'audio' | 'video'
   url: string
   thumbnail_url: string
   created_at: string
@@ -90,18 +90,26 @@ export interface VideoBenchmarkItem {
   scene_image_id: number | null
   prop_image_id: number | null
   audio_input_id: number | null
+  video_input_id: number | null
+  video_output_id: number | null
   character_image_ids: number[]
   scene_image_ids: number[]
   prop_image_ids: number[]
   audio_input_media_ids: number[]
+  video_input_ids: number[]
+  video_output_ids: number[]
   character_image: MediaAsset | null
   scene_image: MediaAsset | null
   prop_image: MediaAsset | null
   audio_input_media: MediaAsset | null
+  video_input_media: MediaAsset | null
+  video_output_media: MediaAsset | null
   character_image_media: MediaAsset[]
   scene_image_media: MediaAsset[]
   prop_image_media: MediaAsset[]
   audio_input_media_items: MediaAsset[]
+  video_input_media_items: MediaAsset[]
+  video_output_media_items: MediaAsset[]
   created_at: string
   updated_at: string
 }
@@ -112,7 +120,9 @@ export type VideoBenchmarkItemInput = Pick<
   | 'character_image_asset' | 'scene_image_asset' | 'prop_image_asset'
   | 'audio_input' | 'video_input' | 'text_prompt' | 'judging_criteria' | 'video_output' | 'score'
   | 'character_image_id' | 'scene_image_id' | 'prop_image_id' | 'audio_input_id'
+  | 'video_input_id' | 'video_output_id'
   | 'character_image_ids' | 'scene_image_ids' | 'prop_image_ids' | 'audio_input_media_ids'
+  | 'video_input_ids' | 'video_output_ids'
 >
 
 export interface MediaAssetListResponse {
@@ -123,8 +133,8 @@ export interface MediaAssetListResponse {
 }
 
 export interface MediaAssetListParams {
-  media_type?: 'image' | 'audio'
-  asset_kind?: 'character' | 'scene' | 'audio' | 'prop'
+  media_type?: 'image' | 'audio' | 'video'
+  asset_kind?: 'character' | 'scene' | 'audio' | 'prop' | 'video'
   q?: string
   limit?: number
   offset?: number
@@ -186,6 +196,8 @@ export const FIELD_LABELS: Record<string, string> = {
   scene_image_id: '场景图片素材',
   prop_image_id: '道具图片素材',
   audio_input_id: '音频输入',
+  video_input_id: '视频输入',
+  video_output_id: '视频输出',
   video_input: '视频输入',
   text_prompt: '文字提示词',
   judging_criteria: '评判标准',
@@ -222,8 +234,12 @@ export const emptyVideoBenchmarkItem: VideoBenchmarkItemInput = {
   scene_image_id: null,
   prop_image_id: null,
   audio_input_id: null,
+  video_input_id: null,
+  video_output_id: null,
   character_image_ids: [],
   scene_image_ids: [],
   prop_image_ids: [],
   audio_input_media_ids: [],
+  video_input_ids: [],
+  video_output_ids: [],
 }
