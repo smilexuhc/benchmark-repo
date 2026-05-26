@@ -7,6 +7,7 @@ import {
   Image,
   Input,
   Modal,
+  Popconfirm,
   Segmented,
   Select,
   Space,
@@ -31,6 +32,7 @@ interface Props {
   item: VideoBenchmarkItem | null
   onClose: () => void
   onSaved: (item: VideoBenchmarkItem) => void | Promise<void>
+  onDeleted?: (id: number) => void | Promise<void>
 }
 
 // 镜头类型和题目类型合并到 Cascader 单独渲染，不走通用 BASIC_FIELDS 流程
@@ -367,12 +369,13 @@ function MediaPicker({
 }
 
 export default function BenchmarkItemDrawer({
-  open, item, onClose, onSaved,
+  open, item, onClose, onSaved, onDeleted,
 }: Props) {
   const { message } = AntApp.useApp()
   const [form, setForm] = useState<VideoBenchmarkItemInput>(emptyVideoBenchmarkItem)
   const [selectedMedia, setSelectedMedia] = useState<Record<string, MediaAsset[]>>({})
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -405,6 +408,21 @@ export default function BenchmarkItemDrawer({
       message.error((e as Error).message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!item) return
+    setDeleting(true)
+    try {
+      await videoBenchmarkApi.remove(item.id)
+      message.success('题目已删除')
+      await onDeleted?.(item.id)
+      onClose()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -451,6 +469,8 @@ export default function BenchmarkItemDrawer({
               placeholder="依次选择 镜头类型 → 能力点 → 题型"
               showSearch={{ filter: (input, path) => path.some((o) => (o.label as string).toLowerCase().includes(input.toLowerCase())) }}
               changeOnSelect={false}
+              expandTrigger="hover"
+              popupClassName="bench-cascader-popup"
               allowClear
               style={{ width: '100%' }}
             />
@@ -539,6 +559,31 @@ export default function BenchmarkItemDrawer({
           />
         </Field>
       ))}
+
+      {item && (
+        <div
+          style={{
+            marginTop: 32,
+            paddingTop: 16,
+            borderTop: '1px dashed #e8e8e8',
+            display: 'flex',
+            justifyContent: 'flex-end',
+          }}
+        >
+          <Popconfirm
+            title="删除题目"
+            description={`确定删除题目 #${item.id}? 删除后可在数据库恢复。`}
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={handleDelete}
+          >
+            <Button danger loading={deleting}>
+              删除题目
+            </Button>
+          </Popconfirm>
+        </div>
+      )}
     </Drawer>
   )
 }

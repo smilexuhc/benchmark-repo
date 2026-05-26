@@ -10,8 +10,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
     label: '单镜头',
     children: [
       {
-        value: '一、创作意图与提示词理解/遵循',
-        label: '一、创作意图与提示词理解/遵循',
+        value: '1.创作意图与提示词理解/遵循',
+        label: '1.创作意图与提示词理解/遵循',
         children: [
           { value: '极简提示词理解', label: '1.极简提示词理解' },
           { value: '主体、动作、场景核心基础测试', label: '2.主体、动作、场景核心基础测试' },
@@ -24,19 +24,19 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '二、人物与主体呈现',
-        label: '二、人物与主体呈现',
+        value: '2.人物与主体呈现',
+        label: '2.人物与主体呈现',
         children: [
           { value: '人物身份与人脸稳定性', label: '1.人物身份与人脸稳定性' },
           { value: '服饰、发型、配饰一致性', label: '2.服饰、发型、配饰一致性' },
           { value: '人物体态、年龄、肤色稳定性', label: '3.人物体态、年龄、肤色稳定性' },
           { value: '动物与非人主体真实感', label: '4.动物与非人主体真实感' },
-          { value: '多主体复杂稳定性', label: '6.多主体复杂稳定性' },
+          { value: '多主体复杂稳定性', label: '5.多主体复杂稳定性' },
         ],
       },
       {
-        value: '三、场面调度与空间关系',
-        label: '三、场面调度与空间关系',
+        value: '3.场面调度与空间关系',
+        label: '3.场面调度与空间关系',
         children: [
           { value: '人物站位合理性', label: '1.人物站位合理性' },
           { value: '主次关系与画面重心', label: '2.主次关系与画面重心' },
@@ -47,8 +47,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '四、动作、表演与物理反馈',
-        label: '四、动作、表演与物理反馈',
+        value: '4.动作、表演与物理反馈',
+        label: '4.动作、表演与物理反馈',
         children: [
           { value: '简单动作执行', label: '1.简单动作执行' },
           { value: '复杂动作执行', label: '2.复杂动作执行' },
@@ -60,8 +60,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '五、场景、道具与画面融合',
-        label: '五、场景、道具与画面融合',
+        value: '5.场景、道具与画面融合',
+        label: '5.场景、道具与画面融合',
         children: [
           { value: '场景布局合理性', label: '1.场景布局合理性' },
           { value: '人物与场景融合度', label: '2.人物与场景融合度' },
@@ -74,8 +74,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '七、镜头语言与视觉风格',
-        label: '七、镜头语言与视觉风格',
+        value: '6.镜头语言与视觉风格',
+        label: '6.镜头语言与视觉风格',
         children: [
           { value: '景别、构图与主体位置', label: '1.景别、构图与主体位置' },
           { value: '基础运镜执行', label: '2.基础运镜执行' },
@@ -88,8 +88,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '八、台词、声音与字幕控制',
-        label: '八、台词、声音与字幕控制',
+        value: '7.台词、声音与字幕控制',
+        label: '7.台词、声音与字幕控制',
         children: [
           { value: '台词文本遵循', label: '1.台词文本遵循' },
           { value: '台词、旁白与内心独白归属', label: '2.台词、旁白与内心独白归属' },
@@ -108,8 +108,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
     label: '连续镜头 2*15s',
     children: [
       {
-        value: '一、跨镜头人物与主体连续性',
-        label: '一、跨镜头人物与主体连续性',
+        value: '1.跨镜头人物与主体连续性',
+        label: '1.跨镜头人物与主体连续性',
         children: [
           { value: '人脸及人物特征连续性', label: '1.人脸及人物特征连续性' },
           { value: '服饰、发型、配饰连续性', label: '2.服饰、发型、配饰连续性' },
@@ -120,8 +120,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '二、站位、空间与调度连续性',
-        label: '二、站位、空间与调度连续性',
+        value: '2.站位、空间与调度连续性',
+        label: '2.站位、空间与调度连续性',
         children: [
           { value: '相邻镜头站位衔接', label: '1.相邻镜头站位衔接' },
           { value: '人物朝向与视线衔接', label: '2.人物朝向与视线衔接' },
@@ -132,8 +132,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '三、动作与剪辑连续性',
-        label: '三、动作与剪辑连续性',
+        value: '3.动作与剪辑连续性',
+        label: '3.动作与剪辑连续性',
         children: [
           { value: '动作姿态接续', label: '1.动作姿态接续' },
           { value: '动作方向接续', label: '2.动作方向接续' },
@@ -144,8 +144,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '四、场景、时间与世界状态连续性',
-        label: '四、场景、时间与世界状态连续性',
+        value: '4.场景、时间与世界状态连续性',
+        label: '4.场景、时间与世界状态连续性',
         children: [
           { value: '场景布置及状态连续性', label: '1.场景布置及状态连续性' },
           { value: '时间、天气与光影连续性', label: '2.时间、天气与光影连续性' },
@@ -156,8 +156,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '五、声音、台词与字幕连续性',
-        label: '五、声音、台词与字幕连续性',
+        value: '5.声音、台词与字幕连续性',
+        label: '5.声音、台词与字幕连续性',
         children: [
           { value: '人物音色跨镜头连续性', label: '1.人物音色跨镜头连续性' },
           { value: '语气、节奏与情绪连续性', label: '2.语气、节奏与情绪连续性' },
@@ -173,29 +173,29 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
     label: '长视频 60s',
     children: [
       {
-        value: '一、剧本覆盖基础测试',
-        label: '一、剧本覆盖基础测试',
+        value: '1.剧本覆盖基础测试',
+        label: '1.剧本覆盖基础测试',
         children: [
           { value: '关键场景覆盖', label: '1.关键场景覆盖' },
           { value: '关键角色覆盖', label: '2.关键角色覆盖' },
           { value: '关键动作与事件覆盖', label: '3.关键动作与事件覆盖' },
-          { value: '多场景切换合理性', label: '5.多场景切换合理性' },
-          { value: '整段主题与情绪基调保持', label: '7.整段主题与情绪基调保持' },
+          { value: '多场景切换合理性', label: '4.多场景切换合理性' },
+          { value: '整段主题与情绪基调保持', label: '5.整段主题与情绪基调保持' },
         ],
       },
       {
-        value: '二、长程主体一致性',
-        label: '二、长程主体一致性',
+        value: '2.长程主体一致性',
+        label: '2.长程主体一致性',
         children: [
           { value: '角色长程一致性（形象、状态）', label: '1.角色长程一致性（形象、状态）' },
-          { value: '角色情绪变化合理性', label: '4.角色情绪变化合理性' },
-          { value: '多角色关系保持', label: '5.多角色关系保持' },
-          { value: '人物声音长程一致性', label: '6.人物声音长程一致性' },
+          { value: '角色情绪变化合理性', label: '2.角色情绪变化合理性' },
+          { value: '多角色关系保持', label: '3.多角色关系保持' },
+          { value: '人物声音长程一致性', label: '4.人物声音长程一致性' },
         ],
       },
       {
-        value: '三、长程场面调度与空间关系',
-        label: '三、长程场面调度与空间关系',
+        value: '3.长程场面调度与空间关系',
+        label: '3.长程场面调度与空间关系',
         children: [
           { value: '多镜头站位连续性', label: '1.多镜头站位连续性' },
           { value: '多人物调度连续性', label: '2.多人物调度连续性' },
@@ -206,8 +206,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '四、长程世界状态追踪',
-        label: '四、长程世界状态追踪',
+        value: '4.长程世界状态追踪',
+        label: '4.长程世界状态追踪',
         children: [
           { value: '场景状态延续', label: '1.场景状态延续' },
           { value: '道具状态延续', label: '2.道具状态延续' },
@@ -218,8 +218,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '五、长程动作、特效与镜头节奏',
-        label: '五、长程动作、特效与镜头节奏',
+        value: '5.长程动作、特效与镜头节奏',
+        label: '5.长程动作、特效与镜头节奏',
         children: [
           { value: '复杂动作段落连续性', label: '1.复杂动作段落连续性' },
           { value: '打斗与攻击反馈连续性', label: '2.打斗与攻击反馈连续性' },
@@ -230,8 +230,8 @@ export const QUESTION_TYPE_OPTIONS: QuestionTypeOption[] = [
         ],
       },
       {
-        value: '六、整段交付可用性',
-        label: '六、整段交付可用性',
+        value: '6.整段交付可用性',
+        label: '6.整段交付可用性',
         children: [
           { value: '一分钟样片完整度', label: '1.一分钟样片完整度' },
           { value: '穿帮严重程度', label: '2.穿帮严重程度' },
@@ -309,7 +309,7 @@ export function buildCascaderOptionsWithCounts(
   })
 }
 
-// 根据 shot_type + question_type 反向查找 Cascader 当前值（[L1, L2, L3]）
+// 根据 shot_type + question_type 反向查找 Cascader 当前值（[L1.value, L2.value, L3.value]）
 export function findCascaderValue(
   shotType: string,
   questionType: string,
@@ -319,6 +319,20 @@ export function findCascaderValue(
   for (const l2 of l1.children ?? []) {
     const l3 = l2.children?.find((o) => o.value === questionType)
     if (l3) return [l1.value, l2.value, l3.value]
+  }
+  return undefined
+}
+
+// 反查 Cascader 路径上的 label（带序号），用于卡片标题展示
+export function findCascaderLabels(
+  shotType: string,
+  questionType: string,
+): string[] | undefined {
+  const l1 = QUESTION_TYPE_OPTIONS.find((o) => o.value === shotType)
+  if (!l1) return undefined
+  for (const l2 of l1.children ?? []) {
+    const l3 = l2.children?.find((o) => o.value === questionType)
+    if (l3) return [l1.label, l2.label, l3.label]
   }
   return undefined
 }

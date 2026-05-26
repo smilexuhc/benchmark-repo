@@ -23,6 +23,7 @@ import { imageUrl, videoBenchmarkApi } from '../api'
 import BenchmarkItemDrawer from './BenchmarkItemDrawer'
 import {
   buildCascaderOptionsWithCounts,
+  findCascaderLabels,
   type StatsGroup,
 } from '../data/questionTypeOptions'
 
@@ -33,8 +34,8 @@ const DEFAULT_PAGE_SIZE = 20
 
 type FilterKey = 'shot_type' | 'task_type' | 'question_type' | 'scene' | 'screen_size'
 
-// 卡片上展示的 chip 字段（task_type 在卡片上隐藏，与编辑页保持一致；manual_tag 单独处理）
-const TAG_FIELDS: FilterKey[] = ['shot_type', 'question_type', 'scene', 'screen_size']
+// 卡片上展示的 chip 字段：shot_type / question_type 提升到标题，scene / screen_size 留作小标签
+const TAG_FIELDS: FilterKey[] = ['scene', 'screen_size']
 
 const MODEL_NAME = 'Seedance'  // v1: 仅一个模型；未来多模型时右侧扩展为多列
 
@@ -388,14 +389,24 @@ function ItemCard({
   const [promptExpanded, setPromptExpanded] = useState(false)
   const [judgingExpanded, setJudgingExpanded] = useState(false)
 
-  const tags = TAG_FIELDS.map((field) => ({
-    field: field as string,
-    value: (item[field] as string)?.trim(),
-  })).filter((t) => !!t.value)
-  // 加 manual_tag chip：若与 question_type 完全相同则去重（迁移后老数据会重复）
+  // 标题：question_type 命中树时显示带序号的 [L1 label, L2 label, L3 label]，未命中（legacy）则只显示 shot_type
+  const shotType = item.shot_type?.trim()
+  const questionType = item.question_type?.trim()
+  const cascaderLabels = shotType && questionType ? findCascaderLabels(shotType, questionType) : undefined
+  const titleParts = cascaderLabels
+    ? cascaderLabels
+    : ([shotType].filter(Boolean) as string[])
+
+  // 顺序与编辑抽屉一致：测试点人工标注 → 场景 → 屏幕尺寸
+  // 当 question_type 已经在标题里时，manual_tag 与之相同则去重；legacy 情况下不去重，让 legacy 文案落到下一行
   const manualTagValue = item.manual_tag?.trim()
-  if (manualTagValue && manualTagValue !== item.question_type?.trim()) {
+  const tags: { field: string; value: string }[] = []
+  if (manualTagValue && (!cascaderLabels || manualTagValue !== questionType)) {
     tags.push({ field: 'manual_tag', value: manualTagValue })
+  }
+  for (const field of TAG_FIELDS) {
+    const value = (item[field] as string)?.trim()
+    if (value) tags.push({ field: field as string, value })
   }
 
   return (
@@ -429,9 +440,26 @@ function ItemCard({
             alignItems: 'center',
           }}
         >
-          <span style={{ fontSize: 13, color: '#9aa0a6', fontWeight: 600 }}>
-            #{item.id}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+            <span style={{ fontSize: 13, color: '#9aa0a6', fontWeight: 600, flexShrink: 0 }}>
+              #{item.id}
+            </span>
+            {titleParts.length > 0 && (
+              <span
+                title={titleParts.join(' · ')}
+                style={{
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: '#1f2328',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {titleParts.join(' · ')}
+              </span>
+            )}
+          </div>
           <Button
             size="small"
             onClick={(e) => {
@@ -604,6 +632,11 @@ export default function BenchmarkItemsPage() {
     await loadStats()
   }
 
+  const onDeleted = async () => {
+    await load()
+    await loadStats()
+  }
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* 顶部筛选栏 */}
@@ -759,6 +792,7 @@ export default function BenchmarkItemsPage() {
         item={editing}
         onClose={() => setDrawerOpen(false)}
         onSaved={onSaved}
+        onDeleted={onDeleted}
       />
     </div>
   )

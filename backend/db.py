@@ -841,7 +841,7 @@ def _video_benchmark_payload(payload) -> dict:
 
 def get_video_benchmark_item(conn, item_id: int) -> dict | None:
     row = conn.execute(
-        "SELECT * FROM video_benchmark_items WHERE id = %s",
+        "SELECT * FROM video_benchmark_items WHERE id = %s AND deleted_at IS NULL",
         (item_id,),
     ).fetchone()
     if row is None:
@@ -922,15 +922,21 @@ def update_video_benchmark_item(conn, item_id: int, payload) -> bool:
 
 
 def delete_video_benchmark_item(conn, item_id: int) -> bool:
+    """逻辑删除：把 deleted_at 置为当前时间，已删除的记录返回 False。"""
     result = conn.execute(
-        "DELETE FROM video_benchmark_items WHERE id = %s",
+        """
+        UPDATE video_benchmark_items
+           SET deleted_at = NOW()
+         WHERE id = %s
+           AND deleted_at IS NULL
+        """,
         (item_id,),
     )
     return result.rowcount > 0
 
 
 def _video_benchmark_filters_sql(filters: dict, q: str | None):
-    where = ["TRUE"]
+    where = ["deleted_at IS NULL"]
     params: list = []
     for field in VIDEO_BENCHMARK_FILTER_FIELDS:
         raw = filters.get(field)
@@ -1007,11 +1013,12 @@ def list_video_benchmark_items(
 
 
 def video_benchmark_stats(conn) -> list[dict]:
-    """按 (shot_type, question_type) 统计题数；包含 question_type 为空的项。"""
+    """按 (shot_type, question_type) 统计未删除题数；包含 question_type 为空的项。"""
     rows = conn.execute(
         """
         SELECT shot_type, question_type, COUNT(*) AS c
           FROM video_benchmark_items
+         WHERE deleted_at IS NULL
          GROUP BY shot_type, question_type
         """
     ).fetchall()
@@ -1031,7 +1038,8 @@ def video_benchmark_today_new_count(conn, tz: str = "Asia/Shanghai") -> int:
         """
         SELECT COUNT(*) AS c
           FROM video_benchmark_items
-         WHERE (created_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date
+         WHERE deleted_at IS NULL
+           AND (created_at AT TIME ZONE %s)::date = (NOW() AT TIME ZONE %s)::date
         """,
         (tz, tz),
     ).fetchone()
