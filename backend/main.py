@@ -508,15 +508,19 @@ def api_generate_prompt(payload: PromptReq):
 def api_generate_image(cid: int, payload: ImageGenReq):
     with get_conn() as conn:
         fetch_character(conn, cid)
-        try:
-            raw = ai.generate_image(payload.prompt)
-            key = _upload_image_bytes(raw)
-        except ai.AIConfigError as e:
-            raise HTTPException(400, str(e)) from e
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(502, f"图片生成失败：{e}") from e
+
+    try:
+        raw = ai.generate_image(payload.prompt)
+        key = _upload_image_bytes(raw)
+    except ai.AIConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"图片生成失败：{e}") from e
+
+    with get_conn() as conn:
+        fetch_character(conn, cid)
         img = attach_image(conn, cid, key, "generated")
         if payload.set_cover:
             db_set_cover(conn, ASSET_CHARACTER, cid, img["id"])
@@ -667,15 +671,19 @@ def api_extract_scene_fields(payload: ExtractReq):
 def api_generate_scene_image(sid: int, payload: ImageGenReq):
     with get_conn() as conn:
         fetch_scene(conn, sid)
-        try:
-            raw = ai.generate_image(payload.prompt)
-            key = _upload_image_bytes(raw)
-        except ai.AIConfigError as e:
-            raise HTTPException(400, str(e)) from e
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(502, f"图片生成失败：{e}") from e
+
+    try:
+        raw = ai.generate_image(payload.prompt)
+        key = _upload_image_bytes(raw)
+    except ai.AIConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"图片生成失败：{e}") from e
+
+    with get_conn() as conn:
+        fetch_scene(conn, sid)
         img = attach_image(conn, sid, key, "generated")
         if payload.set_cover:
             db_set_cover(conn, ASSET_SCENE, sid, img["id"])
@@ -693,18 +701,21 @@ def api_generate_scene_view(sid: int, payload: SceneViewReq):
         cover = scene.get("cover_filename")
         if not cover:
             raise HTTPException(400, "该场景还没有图片，请先生成场景图")
-        prompt, aspect = VIEW_PROMPTS[payload.view]
-        try:
-            ref = storage.get_bytes(cover)
-            raw = ai.generate_image(prompt, ref_image_bytes=ref, aspect_override=aspect)
-            key = _upload_image_bytes(raw)
-        except ai.AIConfigError as e:
-            raise HTTPException(400, str(e)) from e
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(502, f"图片生成失败：{e}") from e
 
+    prompt, aspect = VIEW_PROMPTS[payload.view]
+    try:
+        ref = storage.get_bytes(cover)
+        raw = ai.generate_image(prompt, ref_image_bytes=ref, aspect_override=aspect)
+        key = _upload_image_bytes(raw)
+    except ai.AIConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"图片生成失败：{e}") from e
+
+    with get_conn() as conn:
+        fetch_scene(conn, sid)
         old_keys = replace_source_images(conn, sid, payload.view)
         img = attach_image(conn, sid, key, payload.view)
         conn.commit()
