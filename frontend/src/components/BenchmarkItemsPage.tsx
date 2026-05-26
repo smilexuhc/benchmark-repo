@@ -1,27 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   App as AntApp,
+  AutoComplete,
   Button,
   Empty,
   Image,
   Input,
+  Modal,
+  Pagination,
   Select,
   Space,
-  Table,
+  Spin,
   Tag,
 } from 'antd'
-import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import type {
   MediaAsset,
   VideoBenchmarkItem,
-  VideoBenchmarkItemInput,
   VideoBenchmarkListParams,
 } from '../types'
 import { FIELD_LABELS } from '../types'
 import { imageUrl, videoBenchmarkApi } from '../api'
 import BenchmarkItemDrawer from './BenchmarkItemDrawer'
 
-const DEFAULT_PAGE_SIZE = 50
+const DEFAULT_PAGE_SIZE = 20
 
 type FilterKey = 'shot_type' | 'task_type' | 'question_type' | 'scene' | 'screen_size'
 
@@ -33,138 +34,462 @@ const FILTER_FIELDS: FilterKey[] = [
   'screen_size',
 ]
 
-const DETAIL_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
-  'text_prompt',
-  'judging_criteria',
-]
+const TAG_FIELDS: FilterKey[] = FILTER_FIELDS
 
-const MEDIA_DETAIL_FIELDS: {
-  label: string
-  mediaKey: keyof VideoBenchmarkItem
-  mediaListKey: keyof VideoBenchmarkItem
-  snapshotKey: keyof VideoBenchmarkItem
-}[] = [
-  { label: FIELD_LABELS.character_image_id, mediaKey: 'character_image', mediaListKey: 'character_image_media', snapshotKey: 'character_image_asset' },
-  { label: FIELD_LABELS.scene_image_id, mediaKey: 'scene_image', mediaListKey: 'scene_image_media', snapshotKey: 'scene_image_asset' },
-  { label: FIELD_LABELS.prop_image_id, mediaKey: 'prop_image', mediaListKey: 'prop_image_media', snapshotKey: 'prop_image_asset' },
-  { label: FIELD_LABELS.audio_input_id, mediaKey: 'audio_input_media', mediaListKey: 'audio_input_media_items', snapshotKey: 'audio_input' },
-  { label: FIELD_LABELS.video_input_id, mediaKey: 'video_input_media', mediaListKey: 'video_input_media_items', snapshotKey: 'video_input' },
-  { label: FIELD_LABELS.video_output_id, mediaKey: 'video_output_media', mediaListKey: 'video_output_media_items', snapshotKey: 'video_output' },
-]
+const MODEL_NAME = 'Seedance'  // v1: 仅一个模型；未来多模型时右侧扩展为多列
 
-function compactText(value: string, fallback = '-') {
-  const text = value.trim()
-  if (!text) return fallback
-  return text
+// ----- 工具函数 -----
+
+function scoreColor(score: number | null): string {
+  if (score === null || score === undefined) return '#9aa0a6'
+  if (score >= 4) return '#16a34a'
+  if (score >= 2) return '#2563eb'
+  return '#ea7700'
 }
 
-function TextCell({ value }: { value: string }) {
-  const text = compactText(value)
-  if (text === '-') return <span style={{ color: '#b8bdc4' }}>-</span>
-  return (
-    <span
-      style={{
-        display: 'block',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        lineHeight: '20px',
-      }}
+function formatRelativeTime(iso: string): string {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const diff = Date.now() - t
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+  return iso.slice(0, 10)
+}
+
+function collectAssetMedia(item: VideoBenchmarkItem): MediaAsset[] {
+  return [
+    ...(item.character_image_media || []),
+    ...(item.scene_image_media || []),
+    ...(item.prop_image_media || []),
+    ...(item.audio_input_media_items || []),
+  ]
+}
+
+// ----- 子组件 -----
+
+function AssetThumb({ media }: { media: MediaAsset }) {
+  // 包一层 stopPropagation：点缩略图触发 Image 自身的预览，不冒泡到卡片
+  const wrap = (node: React.ReactNode) => (
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{ display: 'inline-block', lineHeight: 0 }}
     >
-      {text}
-    </span>
+      {node}
+    </div>
   )
+  if (media.media_type === 'image') {
+    return wrap(
+      <Image
+        src={imageUrl(media.object_key)}
+        width={56}
+        height={56}
+        style={{ objectFit: 'cover', borderRadius: 4, background: '#f4f5f7' }}
+      />,
+    )
+  }
+  if (media.media_type === 'audio') {
+    return wrap(
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 4,
+          background: '#f4f5f7',
+          color: '#6b7280',
+          fontSize: 11,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        音频
+      </div>,
+    )
+  }
+  return null
 }
 
-function ScoreTag({ score }: { score: number | null }) {
-  if (score === null) return <Tag style={{ marginInlineEnd: 0 }}>未评分</Tag>
-  const color = score >= 4 ? 'green' : score >= 2 ? 'blue' : 'orange'
+function AssetRow({ item }: { item: VideoBenchmarkItem }) {
+  const all = collectAssetMedia(item)
+  if (all.length === 0) {
+    return <div style={{ fontSize: 12, color: '#bbb' }}>暂无参考资产</div>
+  }
   return (
-    <Tag color={color} style={{ marginInlineEnd: 0 }}>
-      {score} 分
-    </Tag>
+    <Image.PreviewGroup>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        {all.map((media) => (
+          <AssetThumb key={`${media.asset_kind}-${media.id}`} media={media} />
+        ))}
+      </div>
+    </Image.PreviewGroup>
   )
 }
 
-function mediaName(media: MediaAsset) {
-  return media.object_key.split('/').pop() || media.object_key
+// 根据 screen_size 字段返回 CSS aspect-ratio（兼容全角/半角冒号、空格）
+function screenAspectRatio(screenSize: string): string {
+  const s = (screenSize || '')
+    .replace(/[：﹕]/g, ':')
+    .replace(/\s+/g, '')
+  if (s === '9:16') return '9 / 16'
+  if (s.startsWith('2.39')) return '2.39 / 1'
+  return '16 / 9'  // 默认及 16:9
 }
 
-function MediaDetail({ media, snapshot }: { media: MediaAsset | null; snapshot: string }) {
-  if (media?.media_type === 'image') {
-    return (
-      <div>
-        <Image
+// 视频长边目标尺寸（点击放大用 controls 已带的 fullscreen）
+const VIDEO_LONG_SIDE = 200
+
+function VideoRun({
+  media,
+  version,
+  score,
+  screenSize,
+}: {
+  media: MediaAsset
+  version: number
+  score: number | null
+  screenSize: string
+}) {
+  const [previewing, setPreviewing] = useState(false)
+  const aspect = screenAspectRatio(screenSize)
+  // 9:16 走"高占满"；其它走"宽占满"
+  const isVertical = aspect === '9 / 16'
+  const thumbStyle: React.CSSProperties = isVertical
+    ? { height: VIDEO_LONG_SIDE, width: 'auto', aspectRatio: aspect }
+    : { width: VIDEO_LONG_SIDE, height: 'auto', aspectRatio: aspect }
+
+  // 放大后视频尺寸：以 viewport 为参考
+  const previewVideoStyle: React.CSSProperties = isVertical
+    ? { height: '78vh', width: 'auto', aspectRatio: aspect, maxWidth: '90vw' }
+    : { width: 'min(80vw, 1080px)', height: 'auto', aspectRatio: aspect, maxHeight: '80vh' }
+
+  // 竖屏弹窗窄一点
+  const modalWidth = isVertical ? 'auto' : 'min(80vw, 1100px)'
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+      <div
+        onClick={() => setPreviewing(true)}
+        style={{ cursor: 'pointer', lineHeight: 0, position: 'relative' }}
+      >
+        <video
           src={imageUrl(media.object_key)}
-          width={128}
-          height={78}
-          style={{ objectFit: 'contain', background: '#f4f5f7', borderRadius: 4 }}
+          muted
+          playsInline
+          preload="metadata"
+          style={{
+            ...thumbStyle,
+            objectFit: 'cover',
+            background: '#000',
+            borderRadius: 4,
+            pointerEvents: 'none',  // 让点击事件冒泡给外层 div
+            display: 'block',
+          }}
         />
-        <div style={{ marginTop: 6, fontSize: 12 }}>
-          #{media.id} · {mediaName(media)}
+        {/* 中央 ▶ 播放按钮 overlay */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
+            <circle cx="22" cy="22" r="22" fill="rgba(0,0,0,0.55)" />
+            <polygon points="18,13 18,31 33,22" fill="#fff" />
+          </svg>
         </div>
       </div>
-    )
-  }
-  if (media?.media_type === 'audio') {
-    return (
-      <div>
-        <audio controls src={imageUrl(media.object_key)} style={{ width: '100%' }} />
-        <div style={{ marginTop: 6, fontSize: 12 }}>
-          #{media.id} · {mediaName(media)}
-        </div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+        }}
+      >
+        <span style={{ fontSize: 11, color: '#9aa0a6' }}>v{version}</span>
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: scoreColor(score),
+          }}
+        >
+          {score === null || score === undefined ? '未评分' : `评分 ${score}/5`}
+        </span>
       </div>
-    )
-  }
-  if (media?.media_type === 'video') {
-    return (
-      <div>
-        <video controls src={imageUrl(media.object_key)} style={{ width: 180, maxWidth: '100%', borderRadius: 4, background: '#f4f5f7' }} />
-        <div style={{ marginTop: 6, fontSize: 12 }}>
-          #{media.id} · {mediaName(media)}
-        </div>
-      </div>
-    )
-  }
-  return <>{compactText(snapshot, '暂无')}</>
-}
 
-function MediaPreviewStack({ items }: { items: MediaAsset[] }) {
-  if (!items.length) return <span style={{ color: '#b8bdc4' }}>-</span>
-  return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      {items.slice(0, 3).map((media) => (
-        media.media_type === 'image' ? (
-          <Image
-            key={media.id}
-            src={imageUrl(media.object_key)}
-            width={120}
-            height={84}
-            style={{ objectFit: 'cover', borderRadius: 4, background: '#f4f5f7' }}
-          />
-        ) : media.media_type === 'video' ? (
+      <Modal
+        open={previewing}
+        onCancel={() => setPreviewing(false)}
+        footer={null}
+        width={modalWidth}
+        centered
+        destroyOnClose
+        styles={{ body: { padding: 0, background: '#000' } }}
+      >
+        {previewing && (
           <video
-            key={media.id}
             src={imageUrl(media.object_key)}
-            width={120}
-            height={84}
-            muted
+            controls
+            autoPlay
             playsInline
-            preload="metadata"
-            style={{ objectFit: 'cover', borderRadius: 4, background: '#f4f5f7', display: 'block' }}
+            preload="auto"
+            style={{
+              ...previewVideoStyle,
+              objectFit: 'contain',
+              background: '#000',
+              display: 'block',
+            }}
           />
-        ) : (
-          <div
-            key={media.id}
-            style={{ width: 120, height: 84, borderRadius: 4, background: '#f4f5f7', color: '#6b7280', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          >
-            音频
-          </div>
-        )
-      ))}
-      {items.length > 3 && <Tag style={{ marginInlineEnd: 0 }}>+{items.length - 3}</Tag>}
+        )}
+      </Modal>
     </div>
   )
 }
+
+function OutputColumn({ item }: { item: VideoBenchmarkItem }) {
+  const runs = item.video_output_media_items || []
+  const score = item.score
+  const screenSize = item.screen_size || ''
+  const aspect = screenAspectRatio(screenSize)
+  const isVertical = aspect === '9 / 16'
+  const placeholderStyle: React.CSSProperties = isVertical
+    ? { height: VIDEO_LONG_SIDE, width: 'auto', aspectRatio: aspect }
+    : { width: VIDEO_LONG_SIDE, height: 'auto', aspectRatio: aspect }
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        padding: 16,
+        background: '#fafbfc',
+        flex: '1 1 40%',
+        minWidth: 0,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div
+        style={{
+          paddingBottom: 6,
+          borderBottom: '1px solid #f0f0f0',
+          fontSize: 13,
+          fontWeight: 600,
+          color: '#5a6068',
+        }}
+      >
+        {MODEL_NAME}
+        {runs.length > 1 && (
+          <span style={{ fontSize: 11, color: '#9aa0a6', marginLeft: 8, fontWeight: 'normal' }}>
+            {runs.length} 个版本
+          </span>
+        )}
+      </div>
+
+      {runs.length === 0 ? (
+        <div
+          style={{
+            ...placeholderStyle,
+            borderRadius: 4,
+            background: '#f0f1f3',
+            color: '#9aa0a6',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 13,
+          }}
+        >
+          待生成
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 14 }}>
+          {runs.map((media, idx) => (
+            <VideoRun
+              key={media.id}
+              media={media}
+              version={idx + 1}
+              score={score}
+              screenSize={screenSize}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ExpandableText({
+  icon,
+  text,
+  collapsedLines,
+  expanded,
+  onToggle,
+  textStyle,
+}: {
+  icon: string
+  text: string
+  collapsedLines: 1 | 2
+  expanded: boolean
+  onToggle: () => void
+  textStyle?: React.CSSProperties
+}) {
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation()
+        onToggle()
+      }}
+      style={{
+        cursor: 'pointer',
+        background: '#f6f7f9',
+        border: '1px solid #ecedf0',
+        borderRadius: 6,
+        padding: '8px 10px',
+      }}
+    >
+      <div
+        className={expanded ? undefined : `line-clamp-${collapsedLines}`}
+        style={{
+          ...textStyle,
+          whiteSpace: expanded ? 'pre-wrap' : undefined,
+          wordBreak: 'break-word',
+        }}
+      >
+        <span style={{ color: '#9aa0a6', marginRight: 4 }}>{icon}</span>
+        {text}
+      </div>
+      <span
+        style={{
+          fontSize: 12,
+          color: '#1f6feb',
+          userSelect: 'none',
+        }}
+      >
+        {expanded ? '收起' : '展开'}
+      </span>
+    </div>
+  )
+}
+
+function ItemCard({
+  item,
+  onClick,
+}: {
+  item: VideoBenchmarkItem
+  onClick: () => void
+}) {
+  const [promptExpanded, setPromptExpanded] = useState(false)
+  const [judgingExpanded, setJudgingExpanded] = useState(false)
+
+  const tags = TAG_FIELDS.map((field) => ({
+    field,
+    value: (item[field] as string)?.trim(),
+  })).filter((t) => !!t.value)
+
+  return (
+    <div
+      className="benchmark-card"
+      onClick={onClick}
+      style={{
+        display: 'flex',
+        background: '#fff',
+        border: '1px solid #e8e8e8',
+        borderRadius: 8,
+        overflow: 'hidden',
+      }}
+    >
+      {/* 左：题目输入 */}
+      <div
+        style={{
+          flex: '0 0 60%',
+          padding: 16,
+          borderRight: '1px solid #f0f0f0',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          minWidth: 0,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <span style={{ fontSize: 13, color: '#9aa0a6', fontWeight: 600 }}>
+            #{item.id}
+          </span>
+          <Button
+            size="small"
+            onClick={(e) => {
+              e.stopPropagation()
+              onClick()
+            }}
+          >
+            编辑
+          </Button>
+        </div>
+
+        {tags.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {tags.map((t) => (
+              <Tag key={t.field} style={{ marginInlineEnd: 0 }}>
+                {t.value}
+              </Tag>
+            ))}
+          </div>
+        )}
+
+        {item.text_prompt?.trim() ? (
+          <ExpandableText
+            icon="📝"
+            text={item.text_prompt}
+            collapsedLines={2}
+            expanded={promptExpanded}
+            onToggle={() => setPromptExpanded(!promptExpanded)}
+            textStyle={{ fontSize: 13, lineHeight: '20px', color: '#3a3f45' }}
+          />
+        ) : (
+          <div style={{ fontSize: 12, color: '#bbb' }}>
+            <span style={{ marginRight: 4 }}>📝</span>暂无提示词
+          </div>
+        )}
+
+        {item.judging_criteria?.trim() ? (
+          <ExpandableText
+            icon="📋"
+            text={item.judging_criteria}
+            collapsedLines={1}
+            expanded={judgingExpanded}
+            onToggle={() => setJudgingExpanded(!judgingExpanded)}
+            textStyle={{ fontSize: 12, color: '#5a6068' }}
+          />
+        ) : null}
+
+        <div style={{ marginTop: 'auto' }}>
+          <AssetRow item={item} />
+        </div>
+
+        <div style={{ fontSize: 11, color: '#bbb', textAlign: 'right' }}>
+          {formatRelativeTime(item.created_at)}
+        </div>
+      </div>
+
+      {/* 右：Seedance 输出 + 评分 */}
+      <OutputColumn item={item} />
+    </div>
+  )
+}
+
+// ----- 主组件 -----
 
 export default function BenchmarkItemsPage() {
   const { message } = AntApp.useApp()
@@ -218,6 +543,30 @@ export default function BenchmarkItemsPage() {
     load()
   }, [load])
 
+  // 从当前页 items 聚合 distinct 值供下拉建议
+  const filterOptions = useMemo(() => {
+    const result: Record<FilterKey, { value: string }[]> = {
+      shot_type: [],
+      task_type: [],
+      question_type: [],
+      scene: [],
+      screen_size: [],
+    }
+    FILTER_FIELDS.forEach((field) => {
+      const set = new Set<string>()
+      items.forEach((it) => {
+        const v = (it[field] as string)?.trim()
+        if (v) set.add(v)
+      })
+      const selected = filters[field]
+      if (selected) set.add(selected)
+      result[field] = Array.from(set)
+        .sort()
+        .map((value) => ({ value }))
+    })
+    return result
+  }, [items, filters])
+
   const openNew = () => {
     setEditing(null)
     setDrawerOpen(true)
@@ -244,129 +593,9 @@ export default function BenchmarkItemsPage() {
     await load()
   }
 
-  const columns: ColumnsType<VideoBenchmarkItem> = useMemo(
-    () => [
-      {
-        title: 'ID',
-        dataIndex: 'id',
-        width: 76,
-        fixed: 'left',
-      },
-      {
-        title: FIELD_LABELS.shot_type,
-        dataIndex: 'shot_type',
-        width: 150,
-        render: (value: string) => <TextCell value={value} />,
-      },
-      {
-        title: FIELD_LABELS.task_type,
-        dataIndex: 'task_type',
-        width: 190,
-        render: (value: string) => <TextCell value={value} />,
-      },
-      {
-        title: FIELD_LABELS.question_type,
-        dataIndex: 'question_type',
-        width: 190,
-        render: (value: string) => <TextCell value={value} />,
-      },
-      {
-        title: FIELD_LABELS.scene,
-        dataIndex: 'scene',
-        width: 150,
-        render: (value: string) => <TextCell value={value} />,
-      },
-      {
-        title: FIELD_LABELS.screen_size,
-        dataIndex: 'screen_size',
-        width: 120,
-        render: (value: string) => <TextCell value={value} />,
-      },
-      {
-        title: FIELD_LABELS.text_prompt,
-        dataIndex: 'text_prompt',
-        width: 320,
-        render: (value: string) => <TextCell value={value} />,
-      },
-      {
-        title: FIELD_LABELS.judging_criteria,
-        dataIndex: 'judging_criteria',
-        width: 320,
-        render: (value: string) => <TextCell value={value} />,
-      },
-      {
-        title: '人物图',
-        dataIndex: 'character_image_media',
-        width: 400,
-        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
-      },
-      {
-        title: '场景图',
-        dataIndex: 'scene_image_media',
-        width: 400,
-        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
-      },
-      {
-        title: '道具图',
-        dataIndex: 'prop_image_media',
-        width: 400,
-        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
-      },
-      {
-        title: '音频',
-        dataIndex: 'audio_input_media_items',
-        width: 260,
-        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
-      },
-      {
-        title: FIELD_LABELS.video_input,
-        dataIndex: 'video_input_media_items',
-        width: 400,
-        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
-      },
-      {
-        title: FIELD_LABELS.video_output,
-        dataIndex: 'video_output_media_items',
-        width: 400,
-        render: (items: MediaAsset[] = []) => <MediaPreviewStack items={items} />,
-      },
-      {
-        title: FIELD_LABELS.score,
-        dataIndex: 'score',
-        width: 130,
-        render: (value: number | null) => <ScoreTag score={value} />,
-      },
-      {
-        title: '更新时间',
-        dataIndex: 'updated_at',
-        width: 170,
-        render: (value: string) => value || '-',
-      },
-      {
-        title: '操作',
-        key: 'actions',
-        width: 96,
-        fixed: 'right',
-        render: (_, record) => (
-          <Button size="small" onClick={() => openEdit(record)}>
-            编辑
-          </Button>
-        ),
-      },
-    ],
-    [],
-  )
-
-  const pagination: TablePaginationConfig = {
-    current: page,
-    pageSize,
-    total,
-    showSizeChanger: true,
-    showTotal: (count) => `共 ${count} 条`,
-  }
-
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {/* 顶部筛选栏 */}
       <div
         style={{
           flexShrink: 0,
@@ -381,22 +610,28 @@ export default function BenchmarkItemsPage() {
       >
         <Space size={8} wrap>
           {FILTER_FIELDS.map((field) => (
-            <Input
+            <AutoComplete
               key={field}
               allowClear
               placeholder={FIELD_LABELS[field]}
               value={filters[field]}
-              onChange={(event) => {
-                const value = event.target.value.trim() || undefined
-                setFilters((current) => ({ ...current, [field]: value }))
+              options={filterOptions[field]}
+              filterOption={(input, opt) =>
+                (opt?.value as string)
+                  .toLowerCase()
+                  .includes(input.toLowerCase())
+              }
+              onChange={(value) => {
+                const v = (typeof value === 'string' ? value.trim() : '') || undefined
+                setFilters((current) => ({ ...current, [field]: v }))
                 setPage(1)
               }}
-              style={{ width: 136 }}
+              style={{ width: 140 }}
             />
           ))}
           <Select
             allowClear
-            placeholder="Score"
+            placeholder={FIELD_LABELS.score}
             value={score}
             onChange={(value) => {
               setScore(value)
@@ -410,7 +645,7 @@ export default function BenchmarkItemsPage() {
               { value: 4, label: '4 分' },
               { value: 5, label: '5 分' },
             ]}
-            style={{ width: 128 }}
+            style={{ width: 120 }}
           />
           <Button onClick={resetFilters}>重置筛选</Button>
         </Space>
@@ -427,69 +662,55 @@ export default function BenchmarkItemsPage() {
         </Button>
       </div>
 
-      <main style={{ flex: 1, minHeight: 0, padding: 8, overflow: 'hidden' }}>
-        <Table<VideoBenchmarkItem>
-          className="benchmark-items-table"
-          size="small"
-          rowKey="id"
-          loading={loading}
-          dataSource={items}
-          columns={columns}
-          pagination={pagination}
-          scroll={{ x: 3600, y: 'calc(100vh - 196px)' }}
-          locale={{
-            emptyText: (
-              <Empty description="没有符合条件的题目" style={{ padding: 24 }} />
-            ),
-          }}
-          expandable={{
-            expandedRowRender: (record) => (
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-                  gap: 12,
+      {/* 卡片列表 */}
+      <main
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          padding: 16,
+        }}
+      >
+        <Spin spinning={loading}>
+          {items.length === 0 && !loading ? (
+            <Empty description="没有符合条件的题目" style={{ padding: 48 }} />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {items.map((item) => (
+                <ItemCard
+                  key={item.id}
+                  item={item}
+                  onClick={() => openEdit(item)}
+                />
+              ))}
+            </div>
+          )}
+
+          {total > 0 && (
+            <div
+              style={{
+                marginTop: 16,
+                display: 'flex',
+                justifyContent: 'flex-end',
+              }}
+            >
+              <Pagination
+                current={page}
+                pageSize={pageSize}
+                total={total}
+                showSizeChanger
+                pageSizeOptions={[10, 20, 50]}
+                showTotal={(count) => `共 ${count} 条`}
+                onChange={(nextPage, nextSize) => {
+                  setPage(nextPage)
+                  if (nextSize !== pageSize) {
+                    setPageSize(nextSize)
+                  }
                 }}
-              >
-                {MEDIA_DETAIL_FIELDS.map((field) => (
-                  <div key={field.mediaKey}>
-                    <div style={{ fontSize: 12, color: '#8a8f99', marginBottom: 4 }}>
-                      {field.label}
-                    </div>
-                    <div className="prompt-box benchmark-detail-box">
-                      {((record[field.mediaListKey] as MediaAsset[]) || []).length ? (
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                          {((record[field.mediaListKey] as MediaAsset[]) || []).map((media) => (
-                            <MediaDetail key={media.id} media={media} snapshot="" />
-                          ))}
-                        </div>
-                      ) : (
-                        <MediaDetail
-                          media={(record[field.mediaKey] as MediaAsset | null) || null}
-                          snapshot={String(record[field.snapshotKey] ?? '')}
-                        />
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {DETAIL_FIELDS.map((field) => (
-                  <div key={field}>
-                    <div style={{ fontSize: 12, color: '#8a8f99', marginBottom: 4 }}>
-                      {FIELD_LABELS[field]}
-                    </div>
-                    <div className="prompt-box benchmark-detail-box">
-                      {compactText(String(record[field] ?? ''), '暂无')}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ),
-          }}
-          onChange={(nextPagination) => {
-            setPage(nextPagination.current || 1)
-            setPageSize(nextPagination.pageSize || DEFAULT_PAGE_SIZE)
-          }}
-        />
+              />
+            </div>
+          )}
+        </Spin>
       </main>
 
       <BenchmarkItemDrawer

@@ -61,3 +61,27 @@ body {
 .benchmark-items-table .ant-image {
   display: block;
 }
+
+/* 题目卡片：截断 + hover */
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.benchmark-card {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+}
+.benchmark-card:hover {
+  border-color: #d0d5dc;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}

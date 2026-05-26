@@ -39,8 +39,11 @@ const BASIC_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
   'screen_size',
 ]
 
-const LONG_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
+// 文字提示词放在素材上方，列表卡片顺序保持一致
+const TOP_LONG_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
   'text_prompt',
+]
+const LONG_FIELDS: (keyof VideoBenchmarkItemInput)[] = [
   'judging_criteria',
 ]
 
@@ -467,6 +470,17 @@ export default function BenchmarkItemDrawer({
         </Field>
       </div>
 
+      {TOP_LONG_FIELDS.map((key) => (
+        <Field key={key} label={FIELD_LABELS[key]}>
+          <TextArea
+            value={form[key] as string}
+            onChange={(e) => set(key, e.target.value)}
+            autoSize={{ minRows: 4, maxRows: 8 }}
+            placeholder={`输入${FIELD_LABELS[key]}，可填写 URL、object key、文件名或备注`}
+          />
+        </Field>
+      ))}
+
       {MEDIA_FIELDS.map((field) => (
         <MediaPicker
           key={field.idsKey}
@@ -482,7 +496,7 @@ export default function BenchmarkItemDrawer({
           <TextArea
             value={form[key] as string}
             onChange={(e) => set(key, e.target.value)}
-            autoSize={{ minRows: key === 'text_prompt' || key === 'judging_criteria' ? 4 : 2, maxRows: 8 }}
+            autoSize={{ minRows: 4, maxRows: 8 }}
             placeholder={`输入${FIELD_LABELS[key]}，可填写 URL、object key、文件名或备注`}
           />
         </Field>

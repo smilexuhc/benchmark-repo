@@ -15,3 +15,6 @@ online_data/
 frontend/dist/
 *.log
 .DS_Store
+
+# 本地工具产物（Claude Code plan 文件等）
+.claude/

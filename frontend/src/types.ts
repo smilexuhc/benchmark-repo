@@ -202,7 +202,7 @@ export const FIELD_LABELS: Record<string, string> = {
   text_prompt: '文字提示词',
   judging_criteria: '评判标准',
   video_output: '视频输出',
-  score: 'Score（0-5分）',
+  score: '评分',
 }
 
 export const emptyCharacter: CharacterInput = {

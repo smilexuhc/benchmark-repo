@@ -69,8 +69,30 @@ function sceneInfo(s: Scene) {
   )
 }
 
+type Tab = 'character' | 'scene' | 'benchmark'
+const TAB_STORAGE_KEY = 'benchmark_assets_active_tab'
+
+function readStoredTab(): Tab {
+  try {
+    const v = localStorage.getItem(TAB_STORAGE_KEY)
+    if (v === 'character' || v === 'scene' || v === 'benchmark') return v
+  } catch {
+    /* localStorage 不可用时退回默认 */
+  }
+  return 'character'
+}
+
 export default function App() {
-  const [tab, setTab] = useState<'character' | 'scene' | 'benchmark'>('character')
+  const [tab, setTab] = useState<Tab>(readStoredTab)
+
+  const updateTab = (v: Tab) => {
+    setTab(v)
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, v)
+    } catch {
+      /* ignore */
+    }
+  }
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -89,7 +111,7 @@ export default function App() {
         <span style={{ fontSize: 16, fontWeight: 700 }}>资产库</span>
         <Segmented
           value={tab}
-          onChange={(v) => setTab(v as 'character' | 'scene' | 'benchmark')}
+          onChange={(v) => updateTab(v as Tab)}
           options={[
             { label: '角色资产库', value: 'character' },
             { label: '场景资产库', value: 'scene' },
