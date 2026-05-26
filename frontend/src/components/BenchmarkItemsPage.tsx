@@ -668,11 +668,24 @@ export default function BenchmarkItemsPage() {
             onChange={(value) => {
               const arr = (value ?? []) as string[]
               setCascaderPath(arr.length ? arr : undefined)
-              setFilters((current) => ({
-                ...current,
-                shot_type: arr[0] || undefined,
-                question_type: arr.length === 3 ? arr[2] : undefined,
-              }))
+              setFilters((current) => {
+                let questionType: string | undefined
+                if (arr.length === 3) {
+                  questionType = arr[2]
+                } else if (arr.length === 2) {
+                  // 选到 L2（含"待归类"）时，把该 L2 下所有 L3 的 value
+                  // 拼成逗号串传给后端，由 = ANY(...) 命中其下全部 question_type
+                  const l1Opt = cascaderOptions.find((o) => o.value === arr[0])
+                  const l2Opt = l1Opt?.children?.find((c) => c.value === arr[1])
+                  const childValues = (l2Opt?.children ?? []).map((c) => c.value as string)
+                  questionType = childValues.length ? childValues.join(',') : undefined
+                }
+                return {
+                  ...current,
+                  shot_type: arr[0] || undefined,
+                  question_type: questionType,
+                }
+              })
               setPage(1)
             }}
             style={{ width: 260 }}
