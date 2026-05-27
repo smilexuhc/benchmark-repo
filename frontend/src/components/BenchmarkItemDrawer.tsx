@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   App as AntApp,
   Button,
@@ -22,7 +22,7 @@ import type {
   VideoBenchmarkItemInput,
 } from '../types'
 import { emptyVideoBenchmarkItem, FIELD_LABELS } from '../types'
-import { imageUrl, mediaAssetsApi, videoBenchmarkApi } from '../api'
+import { characterApi, imageUrl, mediaAssetsApi, sceneApi, videoBenchmarkApi } from '../api'
 import { QUESTION_TYPE_OPTIONS, findCascaderValue } from '../data/questionTypeOptions'
 
 const { TextArea } = Input
@@ -196,6 +196,22 @@ function MediaThumb({ media }: { media: MediaAsset }) {
   )
 }
 
+const FILTER_FIELDS_BY_KIND: Record<string, { field: string; label: string }[]> = {
+  character: [
+    { field: 'era', label: '时代' },
+    { field: 'type', label: '类型' },
+    { field: 'gender', label: '性别' },
+    { field: 'age', label: '年龄段' },
+    { field: 'genre', label: '常见题材' },
+  ],
+  scene: [
+    { field: 'era', label: '时代' },
+    { field: 'scene_type', label: '场景类型' },
+    { field: 'genre', label: '常见题材' },
+    { field: 'mood', label: '氛围时段' },
+  ],
+}
+
 function MediaPicker({
   label,
   params,
@@ -215,12 +231,21 @@ function MediaPicker({
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [filterValues, setFilterValues] = useState<Record<string, string | undefined>>({})
+  const [filterOptions, setFilterOptions] = useState<Record<string, string[]>>({})
 
-  const load = async (nextPage = page, q = query) => {
+  const filterFields = FILTER_FIELDS_BY_KIND[params.asset_kind || ''] || []
+
+  const load = async (
+    nextPage = page,
+    q = query,
+    filters: Record<string, string | undefined> = filterValues,
+  ) => {
     setLoading(true)
     try {
       const data = await mediaAssetsApi.list({
         ...params,
+        ...filters,
         q: q.trim() || undefined,
         limit: 20,
         offset: (nextPage - 1) * 20,
@@ -235,16 +260,18 @@ function MediaPicker({
   }
 
   useEffect(() => {
-    if (open) load(1, query)
+    if (!open) return
+    load(1, query, filterValues)
+    if (filterFields.length === 0) {
+      setFilterOptions({})
+      return
+    }
+    const fetcher = params.asset_kind === 'scene' ? sceneApi.options : characterApi.options
+    fetcher()
+      .then((opts) => setFilterOptions(opts as Record<string, string[]>))
+      .catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, params.asset_kind, params.media_type])
-
-  const mergedItems = useMemo(() => {
-    const map = new Map<number, MediaAsset>()
-    selected.forEach((media) => map.set(media.id, media))
-    options.forEach((option) => map.set(option.id, option))
-    return Array.from(map.values())
-  }, [options, selected])
 
   const columns: ColumnsType<MediaAsset> = [
     {
@@ -334,6 +361,26 @@ function MediaPicker({
         okText="完成"
         cancelText="关闭"
       >
+        {filterFields.length > 0 && (
+          <Space size={8} wrap style={{ marginBottom: 8 }}>
+            {filterFields.map(({ field, label: lbl }) => (
+              <Select
+                key={field}
+                allowClear
+                placeholder={lbl}
+                value={filterValues[field]}
+                options={(filterOptions[field] || []).map((v) => ({ value: v, label: v }))}
+                onChange={(value) => {
+                  const next = { ...filterValues, [field]: value || undefined }
+                  setFilterValues(next)
+                  setPage(1)
+                  load(1, query, next)
+                }}
+                style={{ width: 140 }}
+              />
+            ))}
+          </Space>
+        )}
         <Input.Search
           allowClear
           placeholder={`搜索${label}`}
@@ -341,14 +388,14 @@ function MediaPicker({
           onChange={(event) => setQuery(event.target.value)}
           onSearch={(value) => {
             setPage(1)
-            load(1, value)
+            load(1, value, filterValues)
           }}
           style={{ marginBottom: 12 }}
         />
         <Table<MediaAsset>
           rowKey="id"
           loading={loading}
-          dataSource={mergedItems}
+          dataSource={options}
           columns={columns}
           pagination={pagination}
           rowSelection={{
@@ -360,7 +407,7 @@ function MediaPicker({
           onChange={(nextPagination) => {
             const nextPage = nextPagination.current || 1
             setPage(nextPage)
-            load(nextPage, query)
+            load(nextPage, query, filterValues)
           }}
         />
       </Modal>

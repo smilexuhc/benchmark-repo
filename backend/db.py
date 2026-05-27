@@ -330,6 +330,12 @@ def get_media_asset(conn, media_id: int) -> dict | None:
     return _media_to_dict(row)
 
 
+MEDIA_FILTER_DATA_FIELDS = (
+    "era", "type", "gender", "age", "genre",
+    "scene_type", "mood",
+)
+
+
 def list_media_assets(
     conn,
     *,
@@ -338,6 +344,7 @@ def list_media_assets(
     q: str | None,
     limit: int,
     offset: int,
+    data_filters: dict[str, str | None] | None = None,
 ) -> dict:
     where = ["a.deleted_at IS NULL"]
     params: list = []
@@ -347,18 +354,24 @@ def list_media_assets(
     if asset_kind:
         where.append("a.kind = %s")
         params.append(asset_kind)
+    for field in MEDIA_FILTER_DATA_FIELDS:
+        raw = (data_filters or {}).get(field)
+        if raw:
+            vals = [v for v in raw.split(",") if v]
+            if vals:
+                where.append(f"a.data->>'{field}' = ANY(%s)")
+                params.append(vals)
     if q:
-        where.append(
-            """
-            (
-                i.object_key ILIKE %s
-                OR i.source ILIKE %s
-                OR a.kind ILIKE %s
-                OR a.data::text ILIKE %s
-            )
-            """
-        )
-        params.extend([f"%{q}%"] * 4)
+        like = f"%{q}%"
+        data_fields = [
+            "title", "persona", "name",
+            "era", "type", "scene_type", "genre",
+            "features", "elements", "description",
+        ]
+        clauses = ["i.object_key ILIKE %s", "i.source ILIKE %s"]
+        clauses.extend(f"a.data->>'{f}' ILIKE %s" for f in data_fields)
+        where.append("(" + " OR ".join(clauses) + ")")
+        params.extend([like] * len(clauses))
 
     where_sql = " AND ".join(where)
     total_row = conn.execute(

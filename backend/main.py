@@ -297,6 +297,13 @@ def list_media_assets_api(
     q: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    era: Optional[str] = None,
+    type: Optional[str] = None,
+    gender: Optional[str] = None,
+    age: Optional[str] = None,
+    genre: Optional[str] = None,
+    scene_type: Optional[str] = None,
+    mood: Optional[str] = None,
 ):
     with get_conn() as conn:
         return db_list_media_assets(
@@ -306,6 +313,15 @@ def list_media_assets_api(
             q=q,
             limit=limit,
             offset=offset,
+            data_filters={
+                "era": era,
+                "type": type,
+                "gender": gender,
+                "age": age,
+                "genre": genre,
+                "scene_type": scene_type,
+                "mood": mood,
+            },
         )
 
 

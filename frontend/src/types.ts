@@ -140,6 +140,13 @@ export interface MediaAssetListParams {
   q?: string
   limit?: number
   offset?: number
+  era?: string
+  type?: string
+  gender?: string
+  age?: string
+  genre?: string
+  scene_type?: string
+  mood?: string
 }
 
 export interface VideoBenchmarkListResponse {
