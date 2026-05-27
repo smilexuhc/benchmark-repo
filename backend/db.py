@@ -345,6 +345,7 @@ def list_media_assets(
     limit: int,
     offset: int,
     data_filters: dict[str, str | None] | None = None,
+    dedup_by_asset: bool = False,
 ) -> dict:
     where = ["a.deleted_at IS NULL"]
     params: list = []
@@ -374,28 +375,59 @@ def list_media_assets(
         params.extend([like] * len(clauses))
 
     where_sql = " AND ".join(where)
-    total_row = conn.execute(
-        f"""
-        SELECT COUNT(*) AS c
-        FROM asset_images i
-        JOIN assets a ON a.id = i.asset_id
-        WHERE {where_sql}
-        """,
-        params,
-    ).fetchone()
-    rows = conn.execute(
-        f"""
-        SELECT
-            i.id, i.asset_id, a.kind AS asset_kind, i.object_key,
-            i.source, i.media_type, i.created_at, a.data
-        FROM asset_images i
-        JOIN assets a ON a.id = i.asset_id
-        WHERE {where_sql}
-        ORDER BY i.id DESC
-        LIMIT %s OFFSET %s
-        """,
-        [*params, limit, offset],
-    ).fetchall()
+    if dedup_by_asset:
+        # 每个 asset 只返回 1 行：优先选 cover_image_id 对应那张，否则取最早的 image
+        total_row = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT a.id) AS c
+            FROM asset_images i
+            JOIN assets a ON a.id = i.asset_id
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchone()
+        rows = conn.execute(
+            f"""
+            WITH dedup AS (
+                SELECT DISTINCT ON (a.id)
+                    i.id, i.asset_id, a.kind AS asset_kind, i.object_key,
+                    i.source, i.media_type, i.created_at, a.data
+                FROM asset_images i
+                JOIN assets a ON a.id = i.asset_id
+                WHERE {where_sql}
+                ORDER BY a.id,
+                    (CASE WHEN i.id = a.cover_image_id THEN 0 ELSE 1 END),
+                    i.id
+            )
+            SELECT * FROM dedup
+            ORDER BY id DESC
+            LIMIT %s OFFSET %s
+            """,
+            [*params, limit, offset],
+        ).fetchall()
+    else:
+        total_row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM asset_images i
+            JOIN assets a ON a.id = i.asset_id
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchone()
+        rows = conn.execute(
+            f"""
+            SELECT
+                i.id, i.asset_id, a.kind AS asset_kind, i.object_key,
+                i.source, i.media_type, i.created_at, a.data
+            FROM asset_images i
+            JOIN assets a ON a.id = i.asset_id
+            WHERE {where_sql}
+            ORDER BY i.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            [*params, limit, offset],
+        ).fetchall()
     return {
         "items": [_media_to_dict(row) for row in rows],
         "total": int(total_row["c"]),

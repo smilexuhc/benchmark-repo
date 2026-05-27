@@ -236,6 +236,8 @@ function MediaPicker({
 
   const filterFields = FILTER_FIELDS_BY_KIND[params.asset_kind || ''] || []
 
+  const dedup = params.asset_kind === 'character' || params.asset_kind === 'scene'
+
   const load = async (
     nextPage = page,
     q = query,
@@ -249,6 +251,7 @@ function MediaPicker({
         q: q.trim() || undefined,
         limit: 20,
         offset: (nextPage - 1) * 20,
+        dedup_by_asset: dedup,
       })
       setOptions(data.items)
       setTotal(data.total)
@@ -393,13 +396,15 @@ function MediaPicker({
           style={{ marginBottom: 12 }}
         />
         <Table<MediaAsset>
-          rowKey="id"
+          rowKey={dedup ? 'asset_id' : 'id'}
           loading={loading}
           dataSource={options}
           columns={columns}
           pagination={pagination}
           rowSelection={{
-            selectedRowKeys: selected.map((media) => media.id),
+            // 去重模式下用 asset_id 匹配：旧数据里存的可能是非封面 image_id，
+            // 仍能让对应角色行显示为已选；新点击会把 selected 替换为封面 image
+            selectedRowKeys: selected.map((media) => dedup ? media.asset_id : media.id),
             preserveSelectedRowKeys: true,
             onChange: (_, rows) => onChange(rows),
           }}

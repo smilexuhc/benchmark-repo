@@ -304,6 +304,7 @@ def list_media_assets_api(
     genre: Optional[str] = None,
     scene_type: Optional[str] = None,
     mood: Optional[str] = None,
+    dedup_by_asset: bool = False,
 ):
     with get_conn() as conn:
         return db_list_media_assets(
@@ -322,6 +323,7 @@ def list_media_assets_api(
                 "scene_type": scene_type,
                 "mood": mood,
             },
+            dedup_by_asset=dedup_by_asset,
         )
 
 

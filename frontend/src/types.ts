@@ -147,6 +147,7 @@ export interface MediaAssetListParams {
   genre?: string
   scene_type?: string
   mood?: string
+  dedup_by_asset?: boolean
 }
 
 export interface VideoBenchmarkListResponse {
