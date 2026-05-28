@@ -469,11 +469,6 @@ function ItemCard({
                 待修改
               </Tag>
             )}
-            {item.comment_count > 0 && (
-              <span style={{ fontSize: 12, color: '#8a8f99', flexShrink: 0 }}>
-                💬 {item.comment_count}
-              </span>
-            )}
           </div>
           <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
             <Button
@@ -670,6 +665,11 @@ export default function BenchmarkItemsPage() {
     await loadStats()
   }
 
+  // 就地替换列表里的某条，避免评论/标记后整页重新加载导致闪刷
+  const patchItem = (updated: VideoBenchmarkItem) => {
+    setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
+  }
+
   const toggleCommentRevision = async () => {
     if (!commentItem) return
     try {
@@ -678,8 +678,8 @@ export default function BenchmarkItemsPage() {
         !commentItem.needs_revision,
       )
       setCommentItem(updated)
+      patchItem(updated)
       message.success(updated.needs_revision ? '已标记待修改' : '已取消待修改')
-      onSaved()
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -899,7 +899,7 @@ export default function BenchmarkItemsPage() {
             item={commentItem}
             onItemChange={(updated) => {
               setCommentItem(updated)
-              onSaved()
+              patchItem(updated)
             }}
             bare
           />
