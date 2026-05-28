@@ -346,3 +346,46 @@ def extract_scene_fields(description: str, options: dict) -> dict:
         raise _translate_error(e) from e
     data = _parse_json(resp.choices[0].message.content or "")
     return {k: str(data.get(k, "") or "").strip() for k in SCENE_EXTRACT_KEYS}
+
+
+# ---------- 道具 ----------
+PROP_PROMPT_SYSTEM = """你是道具/静物概念图提示词工程师。根据用户给出的道具信息，输出一段**英文** AI 绘图提示词。
+
+要求：
+- 单个道具的产品级静物图，纯净背景（solid white / clean studio background），不出现任何人物。
+- 道具居中、完整呈现，准确反映名称、类别与关键细节（材质、形状、颜色、年代感）。
+- 棚拍质感，结尾点明 product photography, studio lighting, photorealistic, ultra-detailed, 8k。
+- 只输出提示词本身，不要解释、不要引号、不要 markdown。"""
+
+PROP_FIELD_LABELS = {
+    "name": "道具名称",
+    "category": "类别",
+}
+
+
+def generate_prop_prompt(prop: dict, description: str = "") -> str:
+    """根据结构化字段或自由描述，生成英文道具提示词。"""
+    client, model = _text_client()
+    if description.strip():
+        user_msg = "道具自由描述：\n" + description.strip()
+    else:
+        lines = []
+        for k, label in PROP_FIELD_LABELS.items():
+            val = (prop.get(k) or "").strip()
+            if val:
+                lines.append(f"{label}：{val}")
+        if not lines:
+            raise ValueError("道具信息为空，无法生成提示词")
+        user_msg = "道具信息：\n" + "\n".join(lines)
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": PROP_PROMPT_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.7,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise _translate_error(e) from e
+    return (resp.choices[0].message.content or "").strip()

@@ -1,5 +1,6 @@
 import type {
   Character, CharacterInput, Scene, SceneInput, SceneViewKind,
+  Prop, PropInput,
   CharImage, Filters, MediaAsset, MediaAssetListParams, MediaAssetListResponse, Options,
   VideoBenchmarkItem, VideoBenchmarkItemInput, VideoBenchmarkListParams,
   VideoBenchmarkListResponse,
@@ -140,6 +141,15 @@ export const sceneApi = {
   generateView: (id: number, view: SceneViewKind) =>
     req<CharImage>(`/api/scenes/${id}/generate-view`, json({ view })),
 }
+
+export const propApi: AssetApi<Prop, PropInput> = makeApi({
+  base: '/api/props',
+  optionsPath: '/api/props/options',
+  promptPath: '/api/props/generate-prompt',
+  extractPath: '/api/props/extract-fields',
+  exportPath: '/api/export/props',
+  imageDeletePath: (id) => `/api/prop-images/${id}`,
+})
 
 export const videoBenchmarkApi = {
   list: (params: VideoBenchmarkListParams) =>

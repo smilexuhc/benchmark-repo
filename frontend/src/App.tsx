@@ -1,14 +1,15 @@
 import { useState } from 'react'
 import { Segmented, Tag } from 'antd'
-import type { Character, Scene } from './types'
+import type { Character, Scene, Prop } from './types'
 import {
-  CHARACTER_FILTER_FIELDS, SCENE_FILTER_FIELDS, FIELD_LABELS,
+  CHARACTER_FILTER_FIELDS, SCENE_FILTER_FIELDS, PROP_FILTER_FIELDS, FIELD_LABELS,
 } from './types'
-import { characterApi, sceneApi } from './api'
+import { characterApi, sceneApi, propApi } from './api'
 import AssetLibrary from './components/AssetLibrary'
 import BenchmarkItemsPage from './components/BenchmarkItemsPage'
 import CharacterDrawer from './components/CharacterDrawer'
 import SceneDrawer from './components/SceneDrawer'
+import PropDrawer from './components/PropDrawer'
 import SceneViewColumn from './components/SceneViewColumn'
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -69,13 +70,22 @@ function sceneInfo(s: Scene) {
   )
 }
 
-type Tab = 'character' | 'scene' | 'benchmark'
+function propInfo(p: Prop) {
+  return (
+    <>
+      <Title text={p.name || '(未命名)'} />
+      <GenreTag genre={p.category} />
+    </>
+  )
+}
+
+type Tab = 'character' | 'scene' | 'prop' | 'benchmark'
 const TAB_STORAGE_KEY = 'benchmark_assets_active_tab'
 
 function readStoredTab(): Tab {
   try {
     const v = localStorage.getItem(TAB_STORAGE_KEY)
-    if (v === 'character' || v === 'scene' || v === 'benchmark') return v
+    if (v === 'character' || v === 'scene' || v === 'prop' || v === 'benchmark') return v
   } catch {
     /* localStorage 不可用时退回默认 */
   }
@@ -115,6 +125,7 @@ export default function App() {
           options={[
             { label: '角色资产库', value: 'character' },
             { label: '场景资产库', value: 'scene' },
+            { label: '道具资产库', value: 'prop' },
             { label: '题目', value: 'benchmark' },
           ]}
         />
@@ -144,6 +155,17 @@ export default function App() {
           renderExtra={(s, refresh) => (
             <SceneViewColumn scene={s} onRefresh={refresh} />
           )}
+        />
+      ) : tab === 'prop' ? (
+        <AssetLibrary<Prop>
+          api={propApi}
+          filterFields={PROP_FILTER_FIELDS}
+          filterLabels={FIELD_LABELS}
+          renderInfo={propInfo}
+          nameOf={(p) => p.name || '道具'}
+          searchPlaceholder="搜索名称 / 提示词 / 描述"
+          newLabel="新建道具"
+          Drawer={PropDrawer}
         />
       ) : (
         <BenchmarkItemsPage />

@@ -30,9 +30,12 @@ import ai
 import storage
 from db import (
     ASSET_CHARACTER,
+    ASSET_PROP,
     ASSET_SCENE,
     CHARACTER_FIELDS,
     FILTER_FIELDS,
+    PROP_FIELDS,
+    PROP_FILTER_FIELDS,
     SCENE_FIELDS,
     SCENE_FILTER_FIELDS,
     asset_to_dict,
@@ -137,6 +140,17 @@ class SceneViewReq(BaseModel):
     view: str  # reverse | multiview
 
 
+class PropIn(BaseModel):
+    name: str = ""
+    category: str = ""
+    prompt: str = ""
+    description: str = ""
+
+
+class PropPromptReq(PropIn):
+    pass
+
+
 class VideoBenchmarkItemIn(BaseModel):
     shot_type: str = ""
     task_type: str = ""
@@ -213,6 +227,13 @@ def fetch_scene(conn, sid: int) -> dict:
     if row is None:
         raise HTTPException(404, "场景不存在")
     return asset_to_dict(conn, row, SCENE_FIELDS, VIEW_SOURCES)
+
+
+def fetch_prop(conn, pid: int) -> dict:
+    row = get_asset(conn, ASSET_PROP, pid)
+    if row is None:
+        raise HTTPException(404, "道具不存在")
+    return asset_to_dict(conn, row, PROP_FIELDS)
 
 
 def fetch_video_benchmark_item(conn, item_id: int) -> dict:
@@ -783,6 +804,164 @@ def api_generate_scene_view(sid: int, payload: SceneViewReq):
     return img
 
 
+@app.get("/api/props/options")
+def get_prop_options(deleted_only: bool = False):
+    def load():
+        with get_conn() as conn:
+            return db_get_options(conn, ASSET_PROP, PROP_FILTER_FIELDS, deleted_only=deleted_only)
+
+    return _cached_api(("prop_options", deleted_only), load)
+
+
+@app.get("/api/props")
+def list_props(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    deleted_only: bool = False,
+):
+    def load():
+        with get_conn() as conn:
+            result = list_assets(
+                conn,
+                ASSET_PROP,
+                PROP_FIELDS,
+                [("category", category)],
+                q,
+                ["name", "prompt", "description"],
+                deleted_only=deleted_only,
+            )
+        result.sort(key=lambda x: (x.get("category") or "", x["id"]))
+        return result
+
+    return _cached_api(("props", category, q, deleted_only), load)
+
+
+@app.get("/api/props/{pid}")
+def get_prop(pid: int):
+    with get_conn() as conn:
+        return fetch_prop(conn, pid)
+
+
+@app.post("/api/props")
+def create_prop(payload: PropIn):
+    with get_conn() as conn:
+        pid = create_asset(conn, ASSET_PROP, PROP_FIELDS, payload)
+        conn.commit()
+        data = fetch_prop(conn, pid)
+    _clear_api_cache()
+    return data
+
+
+@app.put("/api/props/{pid}")
+def update_prop(pid: int, payload: PropIn):
+    with get_conn() as conn:
+        fetch_prop(conn, pid)
+        update_asset(conn, ASSET_PROP, pid, PROP_FIELDS, payload)
+        conn.commit()
+        data = fetch_prop(conn, pid)
+    _clear_api_cache()
+    return data
+
+
+@app.delete("/api/props/{pid}")
+def delete_prop(pid: int):
+    with get_conn() as conn:
+        fetch_prop(conn, pid)
+        keys = delete_asset(conn, ASSET_PROP, pid)
+        conn.commit()
+    _clear_api_cache()
+    _delete_objects(keys)
+    return {"ok": True}
+
+
+@app.post("/api/props/{pid}/restore")
+def restore_prop(pid: int):
+    with get_conn() as conn:
+        if not restore_asset(conn, ASSET_PROP, pid):
+            raise HTTPException(404, "道具不存在或未删除")
+        conn.commit()
+        data = fetch_prop(conn, pid)
+    _clear_api_cache()
+    return data
+
+
+@app.post("/api/props/{pid}/images")
+async def upload_prop_image(pid: int, file: UploadFile = File(...)):
+    with get_conn() as conn:
+        fetch_prop(conn, pid)
+        ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
+        content_type = file.content_type or "application/octet-stream"
+        key = _upload_image_bytes(await file.read(), ext, content_type)
+        img = attach_image(conn, pid, key, "uploaded")
+        conn.commit()
+    _clear_api_cache()
+    return img
+
+
+@app.delete("/api/prop-images/{img_id}")
+def delete_prop_image(img_id: int):
+    with get_conn() as conn:
+        key = db_delete_image(conn, img_id, ASSET_PROP)
+        if key is None:
+            raise HTTPException(404, "图片不存在")
+        conn.commit()
+    _clear_api_cache()
+    storage.delete_object(key)
+    return {"ok": True}
+
+
+@app.put("/api/props/{pid}/cover/{img_id}")
+def set_prop_cover(pid: int, img_id: int):
+    with get_conn() as conn:
+        fetch_prop(conn, pid)
+        try:
+            db_set_cover(conn, ASSET_PROP, pid, img_id)
+        except KeyError as e:
+            raise HTTPException(404, "图片不存在") from e
+        conn.commit()
+        data = fetch_prop(conn, pid)
+    _clear_api_cache()
+    return data
+
+
+@app.post("/api/props/generate-prompt")
+def api_generate_prop_prompt(payload: PropPromptReq):
+    try:
+        prompt = ai.generate_prop_prompt(payload.model_dump(), payload.description)
+    except ai.AIConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"提示词生成失败：{e}") from e
+    return {"prompt": prompt}
+
+
+@app.post("/api/props/{pid}/generate-image")
+def api_generate_prop_image(pid: int, payload: ImageGenReq):
+    with get_conn() as conn:
+        fetch_prop(conn, pid)
+
+    try:
+        raw = ai.generate_image(payload.prompt)
+        key = _upload_image_bytes(raw)
+    except ai.AIConfigError as e:
+        raise HTTPException(400, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"图片生成失败：{e}") from e
+
+    with get_conn() as conn:
+        fetch_prop(conn, pid)
+        img = attach_image(conn, pid, key, "generated")
+        if payload.set_cover:
+            db_set_cover(conn, ASSET_PROP, pid, img["id"])
+        conn.commit()
+    _clear_api_cache()
+    return img
+
+
 CHAR_EXPORT_COLS = [
     ("era", "时代"), ("type", "类型"), ("gender", "性别"), ("age", "年龄段"),
     ("persona", "人设"), ("body", "身材"), ("features", "特征"),
@@ -793,6 +972,10 @@ SCENE_EXPORT_COLS = [
     ("name", "场景名称"), ("era", "时代"), ("scene_type", "场景类型"),
     ("genre", "题材风格"), ("mood", "氛围时段"), ("elements", "关键元素"),
     ("prompt", "场景生成提示词"),
+    ("__imgname__", "原图文件名"), ("__image__", "图片"),
+]
+PROP_EXPORT_COLS = [
+    ("name", "道具名称"), ("category", "类别"), ("prompt", "道具生成提示词"),
     ("__imgname__", "原图文件名"), ("__image__", "图片"),
 ]
 
@@ -945,6 +1128,16 @@ def export_scenes(
     rows = list_scenes(era=era, scene_type=scene_type, genre=genre, mood=mood, q=q)
     data = _build_export_zip(rows, SCENE_EXPORT_COLS, "场景资产库", "name")
     return _zip_response(data, "场景资产库.zip")
+
+
+@app.get("/api/export/props")
+def export_props(
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    rows = list_props(category=category, q=q)
+    data = _build_export_zip(rows, PROP_EXPORT_COLS, "道具资产库", "name")
+    return _zip_response(data, "道具资产库.zip")
 
 
 @app.get("/api/health")
