@@ -67,6 +67,15 @@ SCENE_FIELDS = [
 
 SCENE_FILTER_FIELDS = ["era", "scene_type", "genre", "mood"]
 
+PROP_FIELDS = [
+    "name",         # 道具名称
+    "category",     # 类别（日用品/食物/饰品…）
+    "prompt",       # 生成提示词
+    "description",  # 自由描述
+]
+
+PROP_FILTER_FIELDS = ["category"]
+
 VIDEO_BENCHMARK_FIELDS = [
     "shot_type",
     "task_type",

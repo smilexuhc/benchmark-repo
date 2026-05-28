@@ -71,6 +71,16 @@ export type SceneInput = Pick<
   'name' | 'era' | 'scene_type' | 'genre' | 'mood' | 'elements' | 'prompt' | 'description'
 >
 
+export interface Prop extends AssetBase {
+  name: string
+  category: string
+  description: string
+  created_at: string
+  updated_at: string
+}
+
+export type PropInput = Pick<Prop, 'name' | 'category' | 'prompt' | 'description'>
+
 export interface VideoBenchmarkItem {
   id: number
   shot_type: string
@@ -177,6 +187,7 @@ export type Options = Record<string, string[]>
 
 export const CHARACTER_FILTER_FIELDS = ['era', 'type', 'gender', 'age', 'genre']
 export const SCENE_FILTER_FIELDS = ['era', 'scene_type', 'genre', 'mood']
+export const PROP_FILTER_FIELDS = ['category']
 export const VIDEO_BENCHMARK_FILTER_FIELDS = [
   'shot_type',
   'task_type',
@@ -194,6 +205,7 @@ export const FIELD_LABELS: Record<string, string> = {
   genre: '常见题材',
   scene_type: '场景类型',
   mood: '氛围时段',
+  category: '类别',
   shot_type: '镜头类型',
   task_type: '任务类型',
   question_type: '题目类型',
@@ -225,6 +237,10 @@ export const emptyCharacter: CharacterInput = {
 export const emptyScene: SceneInput = {
   name: '', era: '', scene_type: '', genre: '', mood: '',
   elements: '', prompt: '', description: '',
+}
+
+export const emptyProp: PropInput = {
+  name: '', category: '', prompt: '', description: '',
 }
 
 export const emptyVideoBenchmarkItem: VideoBenchmarkItemInput = {

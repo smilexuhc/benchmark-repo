@@ -284,7 +284,7 @@ export default function AssetLibrary<T extends AssetBase>({
           onDeletedOnlyChange={setDeletedOnly}
         />
         <main style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          {loading ? (
+          {loading && items.length === 0 ? (
             <div style={{ textAlign: 'center', paddingTop: 80 }}>
               <Spin />
             </div>
