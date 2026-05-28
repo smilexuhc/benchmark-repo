@@ -5,7 +5,7 @@ keep evolving without running a migration for every new form field.
 """
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable
 
 import psycopg
@@ -194,7 +194,7 @@ def order_filter_values(field: str, values: list) -> list:
 
 
 def now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class PooledConnection:
@@ -891,11 +891,79 @@ def _video_benchmark_row_to_dict(row: dict) -> dict:
     out.update(
         {
             "id": row["id"],
+            "needs_revision": bool(row.get("needs_revision")),
+            "comment_count": 0,
             "created_at": _normalize_time(row.get("created_at")),
             "updated_at": _normalize_time(row.get("updated_at")),
         }
     )
     return out
+
+
+def _comment_to_dict(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "item_id": row["item_id"],
+        "author": row.get("author") or "",
+        "body": row["body"],
+        "created_at": _normalize_time(row.get("created_at")),
+    }
+
+
+def list_item_comments(conn, item_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, item_id, author, body, created_at
+        FROM benchmark_item_comments
+        WHERE item_id = %s
+        ORDER BY id
+        """,
+        (item_id,),
+    ).fetchall()
+    return [_comment_to_dict(r) for r in rows]
+
+
+def add_item_comment(conn, item_id: int, author: str, body: str) -> dict:
+    row = conn.execute(
+        """
+        INSERT INTO benchmark_item_comments (item_id, author, body, created_at)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id, item_id, author, body, created_at
+        """,
+        (item_id, author, body, now()),
+    ).fetchone()
+    return _comment_to_dict(row)
+
+
+def delete_item_comment(conn, comment_id: int) -> bool:
+    result = conn.execute(
+        "DELETE FROM benchmark_item_comments WHERE id = %s",
+        (comment_id,),
+    )
+    return result.rowcount > 0
+
+
+def set_video_benchmark_needs_revision(conn, item_id: int, value: bool) -> bool:
+    result = conn.execute(
+        "UPDATE video_benchmark_items SET needs_revision = %s WHERE id = %s AND deleted_at IS NULL",
+        (value, item_id),
+    )
+    return result.rowcount > 0
+
+
+def _comment_counts(conn, item_ids: list[int]) -> dict[int, int]:
+    if not item_ids:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT item_id, COUNT(*) AS c
+        FROM benchmark_item_comments
+        WHERE item_id = ANY(%s)
+        GROUP BY item_id
+        """,
+        (item_ids,),
+    ).fetchall()
+    return {r["item_id"]: int(r["c"]) for r in rows}
 
 
 def _video_benchmark_payload(payload) -> dict:
@@ -917,6 +985,7 @@ def get_video_benchmark_item(conn, item_id: int) -> dict | None:
     if row is None:
         return None
     item = _video_benchmark_row_to_dict(row)
+    item["comment_count"] = _comment_counts(conn, [row["id"]]).get(row["id"], 0)
     return _attach_video_benchmark_media(
         item,
         _video_benchmark_media_map(conn, [row]),
@@ -1022,6 +1091,12 @@ def _video_benchmark_filters_sql(filters: dict, q: str | None):
     if manual_tag:
         where.append("manual_tag ILIKE %s")
         params.append(f"%{manual_tag}%")
+    if filters.get("needs_revision"):
+        where.append("needs_revision = true")
+    if filters.get("has_comments"):
+        where.append(
+            "EXISTS (SELECT 1 FROM benchmark_item_comments c WHERE c.item_id = video_benchmark_items.id)"
+        )
     if q:
         clauses = [f"{field} ILIKE %s" for field in VIDEO_BENCHMARK_SEARCH_FIELDS]
         where.append("(" + " OR ".join(clauses) + ")")
@@ -1042,6 +1117,8 @@ def list_video_benchmark_items(
     screen_size: str | None = None,
     score: int | None = None,
     manual_tag: str | None = None,
+    needs_revision: bool = False,
+    has_comments: bool = False,
 ) -> dict:
     where, params = _video_benchmark_filters_sql(
         {
@@ -1052,6 +1129,8 @@ def list_video_benchmark_items(
             "screen_size": screen_size,
             "score": score,
             "manual_tag": manual_tag,
+            "needs_revision": needs_revision,
+            "has_comments": has_comments,
         },
         q,
     )
@@ -1071,11 +1150,16 @@ def list_video_benchmark_items(
     ).fetchall()
     media_by_id = _video_benchmark_media_map(conn, rows)
     links_by_item = _video_benchmark_link_map(conn, [row["id"] for row in rows])
+    counts = _comment_counts(conn, [row["id"] for row in rows])
+    items = []
+    for row in rows:
+        item = _attach_video_benchmark_media(
+            _video_benchmark_row_to_dict(row), media_by_id, links_by_item
+        )
+        item["comment_count"] = counts.get(row["id"], 0)
+        items.append(item)
     return {
-        "items": [
-            _attach_video_benchmark_media(_video_benchmark_row_to_dict(row), media_by_id, links_by_item)
-            for row in rows
-        ],
+        "items": items,
         "total": int(total_row["c"]),
         "limit": limit,
         "offset": offset,

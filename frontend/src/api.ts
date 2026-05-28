@@ -3,7 +3,7 @@ import type {
   Prop, PropInput,
   CharImage, Filters, MediaAsset, MediaAssetListParams, MediaAssetListResponse, Options,
   VideoBenchmarkItem, VideoBenchmarkItemInput, VideoBenchmarkListParams,
-  VideoBenchmarkListResponse,
+  VideoBenchmarkListResponse, BenchmarkComment,
 } from './types'
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -171,6 +171,23 @@ export const videoBenchmarkApi = {
       groups: { shot_type: string; question_type: string; count: number }[]
       today_new: number
     }>('/api/video-benchmark-items/stats'),
+  listComments: (id: number) =>
+    req<BenchmarkComment[]>(`/api/video-benchmark-items/${id}/comments`),
+  addComment: (id: number, author: string, body: string) =>
+    req<BenchmarkComment>(
+      `/api/video-benchmark-items/${id}/comments`,
+      json({ author, body }),
+    ),
+  deleteComment: (commentId: number) =>
+    req<{ ok: boolean }>(
+      `/api/video-benchmark-item-comments/${commentId}`,
+      { method: 'DELETE' },
+    ),
+  setNeedsRevision: (id: number, value: boolean) =>
+    req<VideoBenchmarkItem>(
+      `/api/video-benchmark-items/${id}/needs-revision`,
+      json({ value }),
+    ),
 }
 
 export const mediaAssetsApi = {

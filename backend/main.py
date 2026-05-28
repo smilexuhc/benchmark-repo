@@ -39,12 +39,14 @@ from db import (
     SCENE_FIELDS,
     SCENE_FILTER_FIELDS,
     asset_to_dict,
+    add_item_comment,
     attach_image,
     create_asset,
     create_media_asset,
     create_video_benchmark_item,
     delete_asset,
     delete_image as db_delete_image,
+    delete_item_comment,
     delete_video_benchmark_item,
     get_asset,
     get_conn,
@@ -53,9 +55,11 @@ from db import (
     health_check as db_health_check,
     init_db,
     list_assets,
+    list_item_comments,
     list_media_assets as db_list_media_assets,
     list_video_benchmark_items,
     now,
+    set_video_benchmark_needs_revision,
     video_benchmark_stats,
     video_benchmark_today_new_count,
     replace_source_images,
@@ -149,6 +153,15 @@ class PropIn(BaseModel):
 
 class PropPromptReq(PropIn):
     pass
+
+
+class CommentIn(BaseModel):
+    author: str = ""
+    body: str = ""
+
+
+class NeedsRevisionIn(BaseModel):
+    value: bool
 
 
 class VideoBenchmarkItemIn(BaseModel):
@@ -285,6 +298,8 @@ def list_video_benchmark_api(
     screen_size: Optional[str] = None,
     score: Optional[int] = Query(None, ge=0, le=5),
     manual_tag: Optional[str] = None,
+    needs_revision: bool = False,
+    has_comments: bool = False,
 ):
     with get_conn() as conn:
         return list_video_benchmark_items(
@@ -299,6 +314,8 @@ def list_video_benchmark_api(
             screen_size=screen_size,
             score=score,
             manual_tag=manual_tag,
+            needs_revision=needs_revision,
+            has_comments=has_comments,
         )
 
 
@@ -418,6 +435,44 @@ def delete_video_benchmark_api(item_id: int):
             raise HTTPException(404, "视频 Benchmark 记录不存在")
         conn.commit()
     return {"ok": True}
+
+
+@app.get("/api/video-benchmark-items/{item_id}/comments")
+def list_comments_api(item_id: int):
+    with get_conn() as conn:
+        fetch_video_benchmark_item(conn, item_id)
+        return list_item_comments(conn, item_id)
+
+
+@app.post("/api/video-benchmark-items/{item_id}/comments")
+def add_comment_api(item_id: int, payload: CommentIn):
+    if not payload.body.strip():
+        raise HTTPException(400, "评论内容为空")
+    with get_conn() as conn:
+        fetch_video_benchmark_item(conn, item_id)
+        comment = add_item_comment(
+            conn, item_id, payload.author.strip(), payload.body.strip()
+        )
+        conn.commit()
+    return comment
+
+
+@app.delete("/api/video-benchmark-item-comments/{comment_id}")
+def delete_comment_api(comment_id: int):
+    with get_conn() as conn:
+        if not delete_item_comment(conn, comment_id):
+            raise HTTPException(404, "评论不存在")
+        conn.commit()
+    return {"ok": True}
+
+
+@app.post("/api/video-benchmark-items/{item_id}/needs-revision")
+def set_needs_revision_api(item_id: int, payload: NeedsRevisionIn):
+    with get_conn() as conn:
+        if not set_video_benchmark_needs_revision(conn, item_id, payload.value):
+            raise HTTPException(404, "视频 Benchmark 记录不存在")
+        conn.commit()
+        return fetch_video_benchmark_item(conn, item_id)
 
 
 @app.get("/api/options")

@@ -122,8 +122,18 @@ export interface VideoBenchmarkItem {
   audio_input_media_items: MediaAsset[]
   video_input_media_items: MediaAsset[]
   video_output_media_items: MediaAsset[]
+  needs_revision: boolean
+  comment_count: number
   created_at: string
   updated_at: string
+}
+
+export interface BenchmarkComment {
+  id: number
+  item_id: number
+  author: string
+  body: string
+  created_at: string
 }
 
 export type VideoBenchmarkItemInput = Pick<
@@ -178,6 +188,8 @@ export interface VideoBenchmarkListParams {
   screen_size?: string
   score?: number | null
   manual_tag?: string
+  needs_revision?: boolean
+  has_comments?: boolean
 }
 
 /** 筛选维度：字段名 -> 选中值数组 */

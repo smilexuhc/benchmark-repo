@@ -88,3 +88,10 @@ body {
 .bench-cascader-popup .ant-cascader-menu {
   height: 280px;
 }
+.comment-more {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.comment-item:hover .comment-more {
+  opacity: 1;
+}

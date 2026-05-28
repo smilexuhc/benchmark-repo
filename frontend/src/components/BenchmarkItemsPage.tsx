@@ -3,6 +3,8 @@ import {
   App as AntApp,
   Button,
   Cascader,
+  Checkbox,
+  Drawer,
   Empty,
   Image,
   Input,
@@ -21,6 +23,7 @@ import type {
 import { FIELD_LABELS } from '../types'
 import { imageUrl, videoBenchmarkApi } from '../api'
 import BenchmarkItemDrawer from './BenchmarkItemDrawer'
+import CommentsSection from './BenchmarkComments'
 import {
   buildCascaderOptionsWithCounts,
   findCascaderLabels,
@@ -382,9 +385,11 @@ function ExpandableText({
 function ItemCard({
   item,
   onClick,
+  onComment,
 }: {
   item: VideoBenchmarkItem
   onClick: () => void
+  onComment: () => void
 }) {
   const [promptExpanded, setPromptExpanded] = useState(false)
   const [judgingExpanded, setJudgingExpanded] = useState(false)
@@ -459,16 +464,32 @@ function ItemCard({
                 {titleParts.join(' · ')}
               </span>
             )}
+            {item.needs_revision && (
+              <Tag color="red" style={{ marginInlineEnd: 0, flexShrink: 0 }}>
+                待修改
+              </Tag>
+            )}
           </div>
-          <Button
-            size="small"
-            onClick={(e) => {
-              e.stopPropagation()
-              onClick()
-            }}
-          >
-            编辑
-          </Button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            <Button
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation()
+                onComment()
+              }}
+            >
+              评论{item.comment_count > 0 ? ` ${item.comment_count}` : ''}
+            </Button>
+            <Button
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation()
+                onClick()
+              }}
+            >
+              编辑
+            </Button>
+          </div>
         </div>
 
         {tags.length > 0 && (
@@ -542,6 +563,8 @@ export default function BenchmarkItemsPage() {
   const [manualTag, setManualTag] = useState('')
   const [manualTagQuery, setManualTagQuery] = useState('')
   const [score, setScore] = useState<number | null | undefined>(undefined)
+  const [needsRevisionFilter, setNeedsRevisionFilter] = useState(false)
+  const [hasCommentsFilter, setHasCommentsFilter] = useState(false)
   const [statsGroups, setStatsGroups] = useState<StatsGroup[]>([])
   const [todayNew, setTodayNew] = useState(0)
   const cascaderOptions = useMemo(
@@ -554,6 +577,7 @@ export default function BenchmarkItemsPage() {
   )
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<VideoBenchmarkItem | null>(null)
+  const [commentItem, setCommentItem] = useState<VideoBenchmarkItem | null>(null)
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -571,6 +595,8 @@ export default function BenchmarkItemsPage() {
         offset: (page - 1) * pageSize,
         score,
         manual_tag: manualTagQuery.trim() || undefined,
+        needs_revision: needsRevisionFilter || undefined,
+        has_comments: hasCommentsFilter || undefined,
         ...filters,
       }
       const data = await videoBenchmarkApi.list(params)
@@ -581,7 +607,7 @@ export default function BenchmarkItemsPage() {
     } finally {
       setLoading(false)
     }
-  }, [filters, manualTagQuery, message, page, pageSize, score])
+  }, [filters, manualTagQuery, message, page, pageSize, score, needsRevisionFilter, hasCommentsFilter])
 
   useEffect(() => {
     load()
@@ -609,6 +635,8 @@ export default function BenchmarkItemsPage() {
     setManualTag('')
     setManualTagQuery('')
     setScore(undefined)
+    setNeedsRevisionFilter(false)
+    setHasCommentsFilter(false)
     setPage(1)
   }
 
@@ -635,6 +663,26 @@ export default function BenchmarkItemsPage() {
   const onDeleted = async () => {
     await load()
     await loadStats()
+  }
+
+  // 就地替换列表里的某条，避免评论/标记后整页重新加载导致闪刷
+  const patchItem = (updated: VideoBenchmarkItem) => {
+    setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
+  }
+
+  const toggleCommentRevision = async () => {
+    if (!commentItem) return
+    try {
+      const updated = await videoBenchmarkApi.setNeedsRevision(
+        commentItem.id,
+        !commentItem.needs_revision,
+      )
+      setCommentItem(updated)
+      patchItem(updated)
+      message.success(updated.needs_revision ? '已标记待修改' : '已取消待修改')
+    } catch (e) {
+      message.error((e as Error).message)
+    }
   }
 
   return (
@@ -737,6 +785,24 @@ export default function BenchmarkItemsPage() {
             onChange={(e) => setManualTag(e.target.value)}
             style={{ width: 200 }}
           />
+          <Checkbox
+            checked={needsRevisionFilter}
+            onChange={(e) => {
+              setNeedsRevisionFilter(e.target.checked)
+              setPage(1)
+            }}
+          >
+            待修改
+          </Checkbox>
+          <Checkbox
+            checked={hasCommentsFilter}
+            onChange={(e) => {
+              setHasCommentsFilter(e.target.checked)
+              setPage(1)
+            }}
+          >
+            有评论
+          </Checkbox>
           <Button onClick={resetFilters}>重置筛选</Button>
         </Space>
         <div style={{ flex: 1, minWidth: 16 }} />
@@ -768,6 +834,7 @@ export default function BenchmarkItemsPage() {
                   key={item.id}
                   item={item}
                   onClick={() => openEdit(item)}
+                  onComment={() => setCommentItem(item)}
                 />
               ))}
             </div>
@@ -807,6 +874,37 @@ export default function BenchmarkItemsPage() {
         onSaved={onSaved}
         onDeleted={onDeleted}
       />
+
+      <Drawer
+        open={!!commentItem}
+        title={commentItem ? `评论 · 题目 #${commentItem.id}` : '评论'}
+        width={560}
+        onClose={() => setCommentItem(null)}
+        destroyOnClose
+        extra={
+          commentItem && (
+            <Button
+              type={commentItem.needs_revision ? 'default' : 'primary'}
+              ghost={!commentItem.needs_revision}
+              danger={commentItem.needs_revision}
+              onClick={toggleCommentRevision}
+            >
+              {commentItem.needs_revision ? '取消待修改' : '标记待修改'}
+            </Button>
+          )
+        }
+      >
+        {commentItem && (
+          <CommentsSection
+            item={commentItem}
+            onItemChange={(updated) => {
+              setCommentItem(updated)
+              patchItem(updated)
+            }}
+            bare
+          />
+        )}
+      </Drawer>
     </div>
   )
 }
