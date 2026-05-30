@@ -7,11 +7,11 @@ date: 2026-05-30
 
 # Asset Library Stack Rebuild
 
-**Target repo:** new project (suggested name `asset-library-next` — final name TBD). All file paths in this plan are repo-relative to that new project, not to the current `benchmark-repo`.
+**Target location:** a new project under `benchmark-admin/`. All file paths in this plan are relative to that directory (e.g. `apps/server/src/index.ts` means `benchmark-admin/apps/server/src/index.ts`), not to the existing `backend/` + `frontend/` app.
 
 ## Summary
 
-Rewrite the 角色与场景资产库 (Character & Scene Asset Library) from FastAPI + React/AntD on a single VM onto the team's preferred TypeScript stack: a pnpm monorepo with a **Fastify API server (tRPC v11 + Drizzle + Neon)** and a **React 19 + TanStack Router SPA**, plus the Vercel AI SDK for OpenRouter calls. The app **deploys to a long-lived China-region host co-located with TOS-Beijing — not Vercel** — so the locality that makes today's app work is preserved. Auth is a single hard-wired admin account (env credentials + signed cookie; no better-auth, no user table). Every existing feature across the four asset types (character, scene, prop, video benchmark) is preserved. Data migrates once to a fresh Neon database; TOS object keys are reused as-is. The current Python app stays running until a DNS swap at the end.
+Rewrite the 角色与场景资产库 (Character & Scene Asset Library) from FastAPI + React/AntD on a single VM onto the team's preferred TypeScript stack: a pnpm monorepo with a **Fastify API server (tRPC v11 + Drizzle + Neon)** and a **React 19 + TanStack Router SPA**, calling OpenRouter through a plain OpenAI-compatible client (the `openai` SDK — no Vercel AI SDK). The app **deploys to a long-lived China-region host co-located with TOS-Beijing — not Vercel** — so the locality that makes today's app work is preserved. Auth is a single hard-wired admin account (env credentials + signed cookie; no better-auth, no user table). Every existing feature across the four asset types (character, scene, prop, video benchmark) is preserved. Data migrates once to a fresh Neon database; TOS object keys are reused as-is. The current Python app stays running until a DNS swap at the end.
 
 ---
 
@@ -51,7 +51,7 @@ The asset-library rebuild **at parity** (the 56 legacy routes) plus the one-shot
 | API | tRPC v11 + superjson |
 | Auth | **single hard-wired admin account** — env credentials + a signed session cookie; no better-auth, no user/session tables |
 | DB | **Neon** (Drizzle ORM + drizzle-zod), WebSocket Pool driver |
-| AI | Vercel AI SDK v6 + OpenRouter via the existing China-side proxy |
+| AI | **OpenAI-compatible client (`openai` SDK) pointed at OpenRouter** via the existing China-side proxy — no Vercel AI SDK |
 | Storage | Volcengine TOS (cn-beijing), presigned URLs |
 | Long ops (image gen) | **long-lived HTTP request** on the host; durable pg-boss worker documented as the upgrade path (KTD-4) |
 | Lint / test / env | Biome 2 / Vitest 4 + PGlite / @t3-oss/env-core |
@@ -74,7 +74,7 @@ flowchart LR
   S[Fastify API<br/>tRPC routers: assets / scenes / props / benchmark / media / ai / exports / auth]
   D[(Neon Postgres<br/>Drizzle ORM)]
   T[(Volcengine TOS<br/>cn-beijing, S3-compatible)]
-  A[OpenRouter<br/>via Vercel AI SDK + China proxy]
+  A[OpenRouter<br/>via openai SDK + China proxy]
 
   B -- static assets --> N
   B -- tRPC over HTTPS<br/>superjson --> N
@@ -196,7 +196,7 @@ stateDiagram-v2
 ## Output Structure
 
 ```
-asset-library-next/
+benchmark-admin/
 ├── apps/
 │   ├── web/                            # React SPA (Vite, no SSR)
 │   │   ├── index.html
@@ -241,7 +241,7 @@ asset-library-next/
 │   │       │   └── exports.ts
 │   │       ├── services/
 │   │       │   ├── storage/           # TOS / S3 client wrapper
-│   │       │   ├── ai/                # Vercel AI SDK adapters + prompt registry
+│   │       │   ├── ai/                # openai SDK client (→ OpenRouter) + prompt registry
 │   │       │   └── exports/           # ZIP + XLSX assembly
 │   │       ├── db/
 │   │       │   ├── schema.ts
@@ -344,11 +344,11 @@ asset-library-next/
 
 - **KTD-4. Long-lived HTTP for single image-gen; SSE stream for batch progress; durable worker deferred.** We deploy on a long-lived host, so there is no serverless duration ceiling — a single image generation (the common case, ~minutes) is just a normal HTTP request. Batch regenerate streams per-item progress over an SSE tRPC subscription; each item is persisted before it's yielded, so a dropped connection means the client re-subscribes for the unfinished IDs. **The limit we knowingly accept for M1:** a closed tab / network drop loses the *in-flight* item, with no server-side queue record and no retry. The documented upgrade when that bites (or when video-gen lands) is a **Postgres-backed pg-boss worker** — `POST` enqueues a job and returns an id, the worker processes it, the client reads progress. Because we're already on a long-lived host with Postgres, that upgrade is additive (no re-platform); it is explicitly out of M1 scope. Recorded as a Risk (see Risk Analysis) so the next reviewer sees the trade.
 
-- **KTD-5. Direct TOS presigned URLs handed to the client at query time.** Saves a Vercel function invocation per image and avoids the cold-start penalty on the proxy hop. The downside is exposing `*.volces.com` in the network panel; acceptable for an internal admin tool. The current `/images/{key}` redirect is replaced by `getPresignedUrl()` returning the signed URL inside each asset payload, with a 1-hour TTL.
+- **KTD-5. Direct TOS presigned URLs handed to the client at query time.** Saves an API round-trip per image and lets the browser fetch bytes straight from TOS instead of proxying them through the server. The downside is exposing `*.volces.com` in the network panel; acceptable for an internal admin tool. The current `/images/{key}` redirect is replaced by `getPresignedUrl()` returning the signed URL inside each asset payload, with a 1-hour TTL.
 
 - **KTD-6. tRPC v11 as the only API surface.** All client↔server calls go through tRPC, mounted on Fastify via `@trpc/server`'s `fastifyTRPCPlugin` — the playbook's "always tRPC" rule, minus the TanStack-Start-specific framing since we're not running an SSR meta-framework. tRPC gives an isomorphic client plus a vanilla caller in one type system; the vanilla caller is needed inside Zustand actions (batch regenerate).
 
-- **KTD-7. Vercel AI SDK v6 + `@openrouter/ai-sdk-provider`.** Keeps the existing OpenRouter API key working; standardizes on a single SDK for both text and image. For image generation we use `experimental_generateImage` from `ai` v6 with the OpenRouter provider — current model `gpt-5.4-image-2` continues to work through OpenRouter's image endpoint.
+- **KTD-7. Plain OpenAI-compatible client (`openai` SDK) pointed at OpenRouter — no Vercel AI SDK.** OpenRouter is OpenAI-compatible, so the official `openai` SDK (with `baseURL` set to the OpenRouter China proxy and the existing API key) covers both text and image without an extra abstraction layer. Image generation calls the images endpoint directly; current model `gpt-5.4-image-2` continues to work. This keeps the AI dependency to one well-understood SDK and mirrors how the legacy Python app already talks to OpenRouter — no framework-specific `experimental_*` surface to track.
 
 - **KTD-8. drizzle-zod as the single source of truth.** Every Zod schema in `packages/shared/src/schemas/` either comes from `createInsertSchema()` / `createSelectSchema()` on a Drizzle table, or extends one of those. No hand-written shapes that mirror a DB column.
 
@@ -554,24 +554,24 @@ Units group into five phases by dependency. Each phase should land before the ne
   - Rate limit: N rapid failed logins from one IP → subsequent attempts throttled.
 - **Verification:** server tests in `packages/server/src/auth/__tests__/auth.test.ts` cover sign/verify, happy, unauthorized, and a tampered-cookie case (modified token fails verification).
 
-#### U9. AI service — Vercel AI SDK + OpenRouter, prompt registry
+#### U9. AI service — `openai` SDK + OpenRouter, prompt registry
 
-- **Goal:** one AI module with `generateText`, `generateImage`, `extractFields` callable from any tRPC procedure; system prompts centralized.
+- **Goal:** one AI module wrapping the `openai` client with `generatePrompt`, `generateImage`, `extractFields` helpers callable from any tRPC procedure; system prompts centralized.
 - **Requirements:** R6, R7, R8, R9
 - **Dependencies:** U7
 - **Files:**
   - `packages/server/src/services/ai/index.ts`
-  - `packages/server/src/services/ai/openrouter.ts` (provider instance via `@openrouter/ai-sdk-provider`)
+  - `packages/server/src/services/ai/openrouter.ts` (a single `openai` client: `new OpenAI({ apiKey: env.OPENROUTER_API_KEY, baseURL: env.OPENROUTER_BASE_URL })`)
   - `packages/shared/src/lib/prompts/character.ts` (human, animal, creature, anthro variants)
   - `packages/shared/src/lib/prompts/scene.ts`
   - `packages/shared/src/lib/prompts/prop.ts`
   - `packages/shared/src/lib/prompts/extract-fields.ts`
   - `packages/server/src/services/ai/__tests__/ai.test.ts`
 - **Approach:**
-  - Provider: `createOpenRouter({ apiKey: env.OPENROUTER_API_KEY, baseURL: env.OPENROUTER_BASE_URL })`.
-  - Text: `generateText({ model: openrouter('anthropic/claude-opus-4.7'), system, prompt })`.
-  - Image: `experimental_generateImage({ model: openrouter.image('openai/gpt-5.4-image-2'), prompt, ... })` — the result `.image` is bytes that we pipe to `storage.putObject()`.
-  - Extract: structured-output via `generateObject({ schema: Zod schema for variant fields })`.
+  - Client: one shared `new OpenAI({ apiKey: env.OPENROUTER_API_KEY, baseURL: env.OPENROUTER_BASE_URL })` — OpenRouter is OpenAI-compatible, so no provider wrapper is needed.
+  - Text: `client.chat.completions.create({ model: 'anthropic/claude-opus-4.7', messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }] })`.
+  - Image: `client.images.generate({ model: 'openai/gpt-5.4-image-2', prompt, ... })` — decode the returned `b64_json` (or fetch the URL) to bytes and pipe to `storage.putObject()`.
+  - Extract: `chat.completions.create({ ..., response_format: { type: 'json_schema', json_schema } })` with the Zod schema converted to JSON Schema, then parse + validate the result with the same Zod schema.
   - System prompts live in `packages/shared/src/lib/prompts/` mirroring the current 4 character variants verbatim. Variant selection is by `data.type` for characters; scene/prop use one prompt each.
 - **Technical design (directional):**
   ```ts
@@ -579,15 +579,15 @@ Units group into five phases by dependency. Each phase should land before the ne
   export async function generateCharacterPrompt(input: CharacterInput): Promise<string> {
     const variant = pickCharacterVariant(input.type) // human|animal|creature|anthro
     const system = CHARACTER_PROMPTS[variant]
-    const { text } = await generateText({ model: textModel(), system, prompt: serialize(input) })
-    return text
+    const res = await client.chat.completions.create({ model: TEXT_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: serialize(input) }] })
+    return res.choices[0].message.content ?? ''
   }
   ```
 - **Test scenarios:**
   - Happy path (mocked provider): each of the 4 character variants returns a non-empty string when called with a matching input shape.
   - Happy path: `extractFields` for a sample description returns a `CharacterDataSchema`-shaped object.
   - Error: provider rate-limit response surfaces as a typed `AI_RATE_LIMITED` error the router can map to a 429.
-- **Verification:** AI tests pass with mocked `ai` SDK; manual smoke against staging OpenRouter key returns real content.
+- **Verification:** AI tests pass with the mocked `openai` client; manual smoke against staging OpenRouter key returns real content.
 
 #### U10. assetsRouter (shared CRUD for character / scene / prop)
 
@@ -620,7 +620,7 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `packages/server/src/routers/props.ts`
   - `packages/server/src/routers/__tests__/scenes.test.ts`
 - **Approach:**
-  - `scenes.generateView({ id, mode: "reverse" | "multiview" })` reads the cover image bytes from TOS, calls the image-to-image generation via Vercel AI SDK (`experimental_generateImage` with `images` input), uploads the result with `source: mode`, and attaches it.
+  - `scenes.generateView({ id, mode: "reverse" | "multiview" })` reads the cover image bytes from TOS, calls image-to-image generation through the `openai` client (`client.images.edit` with the source image), uploads the result with `source: mode`, and attaches it.
   - Props are otherwise covered by `assetsRouter` — `propsRouter` is mostly empty initially but reserved for future prop-only operations.
 - **Test scenarios:**
   - Happy path (mocked): `generateView({ mode: "reverse" })` calls AI with the cover image bytes, gets back new bytes, persists with `source: "reverse"`.
@@ -914,7 +914,6 @@ Units group into five phases by dependency. Each phase should land before the ne
 
 These do not block planning, but should be resolved before U21 / U22 fire:
 
-- **Repo name.** Suggested `asset-library-next`; final TBD.
 - **Host sizing.** The China host (Volcengine) carries the Fastify API, nginx, and in-flight image-gen proxy connections. M1 load is single-operator, so a small instance suffices; confirm the box and region (co-located with TOS-Beijing) before U21.
 - **Single admin credential storage.** Default: `ADMIN_EMAIL` + `ADMIN_PASSWORD` read from env at boot, compared constant-time at login (KTD-3). No DB-persisted hash, no bootstrap flow — there is one account and no user table.
 - **Should `propsRouter` exist as a separate router if it has no prop-only procedures?** Current call: yes — empty but reserved, so the API surface mirrors the data model.
@@ -959,6 +958,7 @@ Summarized in U20 and U22; the operational gist:
 - tRPC v11 docs — https://trpc.io
 - Drizzle ORM docs — https://orm.drizzle.team
 - pg-boss (deferred durable worker) — https://github.com/timgit/pg-boss
-- Vercel AI SDK v6 — https://sdk.vercel.ai
+- OpenAI Node SDK (used against OpenRouter) — https://github.com/openai/openai-node
+- OpenRouter API (OpenAI-compatible) — https://openrouter.ai/docs
 - coss UI — https://coss.com/ui/llms.txt
 - Neon serverless driver — https://neon.tech/docs/serverless/serverless-driver
