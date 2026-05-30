@@ -21,10 +21,14 @@ The current app works, but four properties make every change expensive:
 
 - **Stack drift from the team's preferred patterns.** The yose-chat playbook (TanStack Start, tRPC, Drizzle, Zustand, coss UI, Vercel AI SDK) is now the reference architecture across other projects. The asset library is the lone holdout on FastAPI + React-hooks-only + AntD.
 - **No type safety across the wire.** Pydantic on the server, hand-typed `types.ts` on the client. Field shapes drift silently — a JSONB key rename ships without a compile error.
-- **All ~40 routes live in `backend/main.py`.** Single-file growth pattern; module boundaries are implicit.
+- **All 56 routes live in `backend/main.py`.** Single-file growth pattern; module boundaries are implicit.
 - **Operations are manual and bespoke.** Single VM, hand-rolled `deploy/deploy-remote.sh`, systemd unit, Nginx + certbot + htpasswd config that is not in version control as code. No CI, no tests.
 
 The rebuild fixes all four by adopting the playbook: schema-derived types end-to-end, tRPC routers split per resource, serverless deploy via Vercel, Vitest + PGlite on day one, Biome instead of ad-hoc lint.
+
+> **On the playbook.** `docs/stack-playbook.md` is a reference menu, not a contract. We adopt the patterns that fit this project (schema-derived types, tRPC, Drizzle, Vitest/PGlite, Biome, the Zustand recipe) and deviate where the project needs something different — every deliberate deviation is recorded as a KTD (e.g., the Neon **WebSocket Pool** driver in U4, chosen over the playbook's default HTTP driver because U12 needs interactive transactions). "Follow §X" below means "use §X as the reference," not "copy it verbatim."
+
+> **Sequencing.** Build the new app first (Phases 1–4) against a fresh empty Neon DB; data migration is a separate later phase (Phase 5). The migration-specific findings (legacy `audio`/`video` asset kinds, the media-link table shape, the 56-route parity diff) are gated at Phase 5 — they do not block greenfield work, but each is a hard pre-cutover gate, not a best-effort step.
 
 ---
 
@@ -311,7 +315,7 @@ asset-library-next/
 
 - **KTD-2. Fresh Neon DB, one-shot SQL migration.** The current schema has 13 incremental migrations and naming inconsistencies (e.g., `media_type` added late). Designing the Drizzle schema cleanly and migrating once is cheaper than carrying every legacy quirk forward. The one-shot is a Drizzle script (TypeScript, runs against both DBs) — not raw SQL — so it can validate Zod shapes during the copy and surface bad rows early.
 
-- **KTD-3. Single-admin auth via better-auth.** Mirrors current Basic Auth behavior (one shared login, no per-user data). Uses better-auth's email+password plugin, no plugins for admin/phoneNumber/OTP. Extending to multi-user later is additive — add the `admin()` plugin and a `role` column. We pick better-auth (not raw cookies) for parity with other team projects and to get session management for free.
+- **KTD-3. Single-admin auth via better-auth.** Mirrors current Basic Auth behavior (one shared login, no per-user data). Uses better-auth's email+password core only. The playbook (§2) lists `admin`, `phoneNumber`, and `emailOTP` as available better-auth plugins — those are options on the menu, and we deliberately omit all three: a single shared admin login needs none of them. Extending to multi-user later is additive — add the `admin()` plugin and a `role` column. We pick better-auth (not raw cookies) for parity with other team projects and to get session management (and the login rate-limit in U8) for free.
 
 - **KTD-4. SSE-streamed tRPC subscriptions for long-running ops; no queue.** Vercel functions allow up to 300s on Pro; batch regen with ~30s per image gets ~10 items per stream. The client orchestrates resumption for larger batches. Adding Inngest or Trigger.dev is the right escape valve later, but introducing it now costs infra setup without buying anything the streamed approach can't deliver. Recorded as a Risk (see Risk Analysis) so the next reviewer sees the trade.
 
@@ -333,11 +337,11 @@ asset-library-next/
 
 ## Scope Boundaries
 
-In scope: every feature catalogued in this plan's Requirements. Behavior parity is the test — if the current app does X and Requirements list X, the rebuild does X.
+In scope: every feature catalogued in this plan's Requirements. Behavior parity is the test — if the current app does X and Requirements list X, the rebuild does X. **Parity is verified, not assumed:** before cutover, U22 produces a route-inventory diff of the legacy 56 routes against the new tRPC surface so any behavior the Requirements failed to capture is caught, not silently dropped.
 
 ### Deferred to Follow-Up Work
 
-- Image upload validation hardening (size, dimension, MIME sniff). The current app trusts the client; we preserve that posture initially.
+- Deep image upload validation (dimension, MIME sniff). The current app trusts the client; we preserve that posture initially. **Note:** a hard upload size cap and login rate-limiting are *not* deferred — both are in scope now (U13, U8) as cheap blast-radius controls.
 - Audit logs (who changed what, when).
 - Analytics / usage metrics.
 - Full-text search beyond ILIKE on `name` and `data`.
@@ -372,8 +376,8 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `.husky/pre-commit`
   - `package.json` (root, with lint-staged config)
   - `apps/web/package.json`, `packages/server/package.json`, `packages/shared/package.json` (workspace declarations only, no source yet)
-- **Approach:** Follow playbook §4 exactly. `node-linker=hoisted` in `.npmrc`. Biome at root with 2-space, 100col, single quotes per playbook §5.9. Husky + lint-staged run `biome format --write` on staged files. Strict `tsconfig` with `noUncheckedIndexedAccess: true` and path aliases (`@/lib/*`, `@/server/*`, `@/constant/*`, `@/env`, `@/*`).
-- **Patterns to follow:** stack-playbook.md §3-5 verbatim; yose-chat's root files if accessible.
+- **Approach:** Follow playbook §4 as the layout reference. `node-linker=hoisted` in `.npmrc`. Biome at root with 2-space, 100col, single quotes per playbook §5.9. Husky + lint-staged run `biome format --write` on staged files. Strict `tsconfig` with `noUncheckedIndexedAccess: true` and path aliases (`@/lib/*`, `@/server/*`, `@/constant/*`, `@/env`, `@/*`).
+- **Patterns to follow:** `docs/stack-playbook.md` §3-5 as reference; yose-chat's root files if accessible.
 - **Test scenarios:** Test expectation: none — pure scaffolding, exercised by every later unit.
 - **Verification:** `pnpm install`, `pnpm lint`, `pnpm typecheck` all succeed at the root.
 
@@ -391,7 +395,7 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `apps/web/components.json` (coss UI config)
   - `vitest.config.ts` at root with `test.projects` declaration for `web`, `server`, `shared`
 - **Approach:** Plugin order in `vite.config.ts` per playbook §5.1: `tsConfigPaths` → `tanstackStart()` → `nitro({ preset: 'vercel' })` → `viteReact()` → `tailwindcss()`. Initialize coss UI per playbook §5.6 (read `coss.com/ui/llms.txt` first, don't reach for shadcn patterns). Add a single dummy button to prove the design system works.
-- **Patterns to follow:** stack-playbook.md §5.1 and §5.6 verbatim.
+- **Patterns to follow:** `docs/stack-playbook.md` §5.1 and §5.6 as reference.
 - **Test scenarios:**
   - Happy path: `pnpm --filter web dev` serves the root page; vitest `web` project boots and runs a smoke test asserting `__root.tsx` renders without errors.
 - **Verification:** root page renders in the browser; smoke test passes.
@@ -421,9 +425,9 @@ Units group into five phases by dependency. Each phase should land before the ne
 - **Dependencies:** U1
 - **Files:**
   - `packages/shared/src/env.ts`
-  - `packages/server/src/db/index.ts` (configured Drizzle client with Neon HTTP driver — no schema yet)
+  - `packages/server/src/db/index.ts` (configured Drizzle client with Neon WebSocket Pool driver — no schema yet)
   - `.env.example` at root
-- **Approach:** Per playbook §5.8. Server-only vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `TOS_BUCKET`, `TOS_REGION`, `TOS_ENDPOINT`, `TOS_ACCESS_KEY_ID`, `TOS_SECRET_ACCESS_KEY`, `BETTER_AUTH_SECRET`. Client vars (none yet — UI text is all in-bundle). `runtimeEnv: process.env`. Drizzle client uses `@neondatabase/serverless` HTTP-based driver per playbook §5.3.
+- **Approach:** Per playbook §5.8. Server-only vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `TOS_BUCKET`, `TOS_REGION`, `TOS_ENDPOINT`, `TOS_ACCESS_KEY_ID`, `TOS_SECRET_ACCESS_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`. Client vars (none yet — UI text is all in-bundle). `runtimeEnv: process.env`. **Driver decision (deviation from playbook §5.3):** use the `@neondatabase/serverless` **WebSocket Pool** driver (`Pool` + `drizzle-orm/neon-serverless`), not the HTTP/fetch driver. The HTTP driver only supports non-interactive batched transactions; U12 needs an interactive `db.transaction()` (upsert an item, read its generated id, then insert media links keyed on that id, rolling back the item if a link fails). The Pool driver is the one authoritative client for the whole app so transactional and non-transactional paths share it.
 - **Test scenarios:**
   - Happy path: env loads with all required vars; `db.execute(sql\`select 1\`)` returns 1.
   - Error path: missing `DATABASE_URL` causes module-load to throw before any handler runs.
@@ -517,7 +521,8 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `apps/web/src/lib/auth-client.ts`
   - `packages/server/src/trpc/context.ts` (extend to read session)
   - `packages/server/src/trpc/procedures.ts` (`protectedProcedure` checks session)
-- **Approach:** Per playbook §5.4. better-auth reads/writes the same Drizzle client; generated tables come from `npx @better-auth/cli generate` and land in `auth.gen.ts`. Context derives `session` from cookies; `protectedProcedure` throws `UNAUTHORIZED` if absent. Seed script inserts the first admin user from env-provided credentials.
+- **Approach:** Per playbook §5.4. better-auth reads/writes the same Drizzle client; generated tables come from `npx @better-auth/cli generate` and land in `auth.gen.ts`. Context derives `session` from cookies; `protectedProcedure` throws `UNAUTHORIZED` if absent. Seed script inserts the first admin user from env-provided credentials (`ADMIN_EMAIL` / `ADMIN_PASSWORD`).
+  - **Login rate-limiting (in scope):** enable better-auth's rate-limit on the sign-in path (per-IP attempt cap + backoff). The single admin login is full-blast-radius under credential stuffing, so this is a cheap, required control rather than deferred hardening.
 - **Test scenarios:**
   - Happy path: sign-in with seed credentials → cookie set → subsequent `protectedProcedure` call succeeds.
   - Error: `protectedProcedure` without cookie → `UNAUTHORIZED`; expired session → re-login required.
@@ -607,7 +612,7 @@ Units group into five phases by dependency. Each phase should land before the ne
 - **Approach:**
   - Procedures: `list`, `get`, `create`, `update`, `delete`, `restore`, `setNeedsRevision`, `stats`, `comments.list`, `comments.add`, `comments.delete`.
   - Stats returns `{ shotType, questionType, count }[]` via a `GROUP BY` query.
-  - Create / update accept the full media-link bundle (`{ characterImageIds, sceneImageIds, propImageIds, audioInputId, videoInputId, videoOutputId }`); router upserts links transactionally inside `db.transaction()` per playbook §3.
+  - Create / update accept the full media-link bundle (`{ characterImageIds, sceneImageIds, propImageIds, audioInputId, videoInputId, videoOutputId }`); router upserts links transactionally inside an interactive `db.transaction()` (requires the WebSocket Pool driver chosen in U4 — the HTTP driver cannot run this).
   - Comments use the authenticated user's email as `author`.
 - **Test scenarios:**
   - Happy path: create item with 3 character + 1 scene + 1 video → load → all 5 links present and grouped by role on the response.
@@ -628,7 +633,7 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `packages/server/src/routers/__tests__/exports.test.ts`
 - **Approach:**
   - `mediaAssetsRouter.list({ kind?, mediaType?, dedup })`: joins `asset_images` to `assets`, optionally dedups by `object_key`, returns presigned URLs.
-  - `mediaAssetsRouter.upload`: tRPC procedure accepting `{ kind, file: base64 | FormData }`. Inserts the image row + uploads to TOS in a single transaction (the TOS write happens first; on insert failure, schedule a deferred delete to avoid leaking objects — recorded as a Risk).
+  - `mediaAssetsRouter.upload`: tRPC procedure accepting `{ kind, file: base64 | FormData }`. Inserts the image row + uploads to TOS in a single transaction (the TOS write happens first; on insert failure, schedule a deferred delete to avoid leaking objects — recorded as a Risk). **Upload size cap (in scope):** enforce a hard `Content-Length` limit (reject oversized uploads before reading the body) so a single authenticated upload can't exhaust the Vercel function memory or inflate the bucket unbounded. This is the one upload control we pull forward; deeper validation (dimension, MIME sniff) stays deferred.
   - `aiRouter.generatePrompt({ kind, input })`, `extractFields({ kind, description })`, `generateImage({ kind, id, prompt, refImage?, aspectRatio? })`. Each maps to the matching AI service function and persists results.
   - `exportsRouter.exportZip({ kind, filters, search })`: returns a `ReadableStream` via tRPC's `streamResponse` (raw HTTP), assembled with `archiver` (ZIP) + `exceljs` (XLSX). Streaming avoids buffering hundreds of MB in a Vercel function.
 - **Technical design (directional):**
@@ -673,7 +678,7 @@ Units group into five phases by dependency. Each phase should land before the ne
   - Happy path: subscribe with 3 IDs → 3 yields with `status: "done"` followed by `status: "complete"`.
   - Resumption: 5 IDs, force-fail after 2 → second subscription with the remaining 3 IDs completes them.
   - Per-item failure: 1 of 3 fails → yield includes `status: "failed", error`; other 2 succeed; subscription completes without throwing.
-- **Verification:** UI consumer in U20 renders progress against a real subscription end-to-end.
+- **Verification:** UI consumer in U19 renders progress against a real subscription end-to-end.
 
 ### Phase 4 — Frontend
 
@@ -795,15 +800,19 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `tools/migrate-from-legacy/__tests__/migrate.test.ts`
   - `tools/migrate-from-legacy/README.md`
 - **Approach:**
-  - Two Drizzle clients: `legacyDb` against the source DSN, `newDb` against the new DSN.
+  - **Inspect the source schema first.** This unit is written against the *actual* legacy tables in `backend/migrations/*.sql` (13 files), not assumptions. Two known shape mismatches the migration must handle explicitly (below), confirmed against migration `0005`.
+  - Two Drizzle clients: `legacyDb` against the source DSN (read-only role), `newDb` against the new DSN.
+  - **Asset `kind` reconciliation (blocker if unhandled).** The legacy `assets.kind` CHECK allows five values — `character | scene | audio | prop | video` — but the new model has three (`character | scene | prop`). Legacy `audio` and `video` *asset* rows have no home in the new discriminated union and would be silently skipped by a naive "validate-then-insert." Before the production run, decide their disposition explicitly: either model them (extend the union / route them to `asset_images` with the right `media_type`) or record a deliberate drop with row counts. Do not let them fall through as validation failures.
   - For each legacy asset row: parse via the legacy shape, transform into the new typed-column + JSONB shape, validate against the new Zod variant, insert.
-  - For each `asset_images` row: copy verbatim, preserve `object_key`.
-  - For `video_benchmark_*`: copy items, then materialize `videoBenchmarkMediaLinks` rows from the legacy `video_input_id` / `video_output_id` columns plus the JSONB media link blob (whatever shape the legacy app used).
+  - For each `asset_images` row: copy verbatim, preserve `object_key` and `media_type` (`image | audio | video`).
+  - For `video_benchmark_*`: copy items, then materialize `videoBenchmarkMediaLinks` from the legacy **normalized `video_benchmark_media_links` table** (migration `0005`) — there is no JSONB blob. That table carries a `sort_order` column and a `role` vocabulary that differs from the new model: legacy `character_image | scene_image | prop_image | audio_input | video_input | video_output` → new `character | scene | prop | audio_input | video_input | video_output`. The migration owns this rename map. Note the new compound PK `(itemId, assetImageId, role)` drops `sort_order`; if multi-image display order matters, either preserve `sort_order` as a column or assert the loss is acceptable before the run.
   - Idempotent: re-running the script is safe; uses `INSERT ... ON CONFLICT DO NOTHING` keyed on `legacy_id` (a temporary nullable column we add to the new schema for the cutover window only, then drop).
-  - Reports unmigrated rows (validation failures) to stderr without halting; final summary counts.
+  - Reports unmigrated rows (validation failures) to stderr; final summary counts. **The failure set is a pre-cutover gate, not a warning:** before the production run, the count must be zero or every failure explicitly accounted for (especially legacy `audio`/`video` asset rows and any unmapped link roles). A non-empty silent skip blocks cutover.
 - **Test scenarios:**
   - Happy path: 10 legacy assets → 10 new assets, all parseable.
   - Edge: legacy asset with a `data` shape that violates the new Zod variant → logged + skipped + included in the failure count.
+  - Edge: legacy asset with `kind = 'audio'` or `'video'` → routed per the disposition decision (modeled or deliberately dropped with a count), never silently skipped.
+  - Edge: legacy media link with role `character_image` → mapped to new role `character` via the rename map; an unmapped role is a logged failure, not a silent drop.
   - Idempotency: run twice → second run inserts zero new rows.
 - **Verification:** dry-run on a snapshot of production Neon completes within 30 minutes; failure count fits a one-page report we can review.
 
@@ -830,11 +839,12 @@ Units group into five phases by dependency. Each phase should land before the ne
 - **Files:**
   - `tools/migrate-from-legacy/cutover-runbook.md`
 - **Approach:**
+  - **Route-parity gate (before the first rehearsal):** produce a feature/route inventory diff — the legacy 56 `backend/main.py` routes mapped to the new tRPC procedures. Every legacy route must map to a procedure or be explicitly recorded as dropped. This makes "behavior parity" a checked artifact instead of a circular assertion against the Requirements list.
   - **Dress rehearsal (twice):**
     1. Snapshot production Neon → staging Neon.
     2. Run `migrate.ts` from staging into the new Neon DB.
     3. Smoke-test the new app against the migrated data (open every page, generate one prompt, generate one image, run one export).
-    4. Time the migration; iterate on any validation failures.
+    4. Time the migration; resolve the `audio`/`video` asset-kind disposition and any link-role mapping (U20) — the migration failure count must reach zero or be fully accounted for before the production run.
   - **Production cutover:**
     1. T-60min: announce write freeze to users (the team).
     2. T-60min: scale old app's write endpoints to read-only via a feature flag on the FastAPI side, or stop the systemd unit.
@@ -857,7 +867,7 @@ Units group into five phases by dependency. Each phase should land before the ne
 - **Risk: Zod discriminated union on `data` doesn't catch DB-direct edits.** Mitigation: all writes go through tRPC procedures that validate inputs. Direct SQL edits (admin in psql) bypass validation by design.
 - **Risk: better-auth schema generation drifts from manual schema edits.** Mitigation: `auth.gen.ts` is never hand-edited; regenerate after every better-auth version bump.
 - **Risk: OpenRouter changes the model ID or pricing for `gpt-5.4-image-2`.** Mitigation: model IDs are env-configurable; rollout to a new model is one env var + a smoke test.
-- **Risk: legacy data has rows the new Zod schemas reject.** Mitigation: U20 logs failures rather than halting; the cutover runbook (U22) reserves time for fix-ups before the production run.
+- **Risk: legacy data has rows the new Zod schemas reject (notably `audio`/`video` asset kinds and unmapped media-link roles).** Mitigation: U20 logs every failure with counts; the dress rehearsal (U22) treats a non-zero, unaccounted failure set as a cutover blocker — not a warning — and reserves time for the `audio`/`video` disposition decision and the link-role rename map before the production run.
 - **Risk: image uploads via tRPC base64 inflate request payload for large files.** Mitigation: upload procedure accepts `FormData` via a small TanStack Start raw route that delegates to the storage service; tRPC procedure receives only the resulting `object_key`. Documented in U13.
 
 ---
@@ -912,10 +922,10 @@ Summarized in U20 and U22; the operational gist:
 
 ## Sources and Research
 
-- `stack-playbook.md` (this repo) — the target stack reference, version-pinned to yose-chat patterns. Every KTD that names a library version cites a playbook section.
+- `docs/stack-playbook.md` (committed in this repo) — the target stack reference menu. KTDs cite playbook sections, and record deliberate deviations from it (e.g., U4's Pool driver).
 - Current `benchmark-repo/backend/main.py`, `db.py`, `ai.py`, `storage.py` — the source of feature parity for Requirements R1-R18.
 - Current `benchmark-repo/frontend/src/{AssetLibrary,BenchmarkItemsPage}.tsx` — the source of UX parity for Requirements R1, R13.
-- Current `benchmark-repo/migrations/*.sql` (13 files) — the source of the cumulative DB shape that U20 has to migrate from.
+- Current `benchmark-repo/backend/migrations/*.sql` (13 files) — the source of the cumulative DB shape that U20 has to migrate from.
 - TanStack Start docs — https://tanstack.com/start
 - tRPC v11 docs — https://trpc.io
 - Drizzle ORM docs — https://orm.drizzle.team
