@@ -19,7 +19,7 @@ Rewrite the 角色与场景资产库 (Character & Scene Asset Library) from Fast
 
 The current app works, but four properties make every change expensive:
 
-- **Stack drift from the team's preferred patterns.** The yose-chat playbook (TanStack Start, tRPC, Drizzle, Zustand, coss UI, Vercel AI SDK) is now the reference architecture across other projects. The asset library is the lone holdout on FastAPI + React-hooks-only + AntD.
+- **Stack drift from the team's preferred patterns.** The team's stack playbook (`docs/stack-playbook.md`: tRPC, Drizzle, Zustand, coss UI, Vitest/PGlite, Biome) is now the reference architecture across other projects. The asset library is the lone holdout on FastAPI + React-hooks-only + AntD.
 - **No type safety across the wire.** Pydantic on the server, hand-typed `types.ts` on the client. Field shapes drift silently — a JSONB key rename ships without a compile error.
 - **All 56 routes live in `backend/main.py`.** Single-file growth pattern; module boundaries are implicit.
 - **Operations are manual and bespoke.** Single VM, hand-rolled `deploy/deploy-remote.sh`, systemd unit, Nginx + certbot + htpasswd config that is not in version control as code. No CI, no tests.
@@ -408,7 +408,7 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `package.json` (root, with lint-staged config)
   - `apps/web/package.json`, `packages/server/package.json`, `packages/shared/package.json` (workspace declarations only, no source yet)
 - **Approach:** Follow playbook §4 as the layout reference. `node-linker=hoisted` in `.npmrc`. Biome at root with 2-space, 100col, single quotes per playbook §5.9. Husky + lint-staged run `biome format --write` on staged files. Strict `tsconfig` with `noUncheckedIndexedAccess: true` and path aliases (`@/lib/*`, `@/server/*`, `@/constant/*`, `@/env`, `@/*`).
-- **Patterns to follow:** `docs/stack-playbook.md` §3-5 as reference; yose-chat's root files if accessible.
+- **Patterns to follow:** `docs/stack-playbook.md` §3-5 as reference.
 - **Test scenarios:** Test expectation: none — pure scaffolding, exercised by every later unit.
 - **Verification:** `pnpm install`, `pnpm lint`, `pnpm typecheck` all succeed at the root.
 
