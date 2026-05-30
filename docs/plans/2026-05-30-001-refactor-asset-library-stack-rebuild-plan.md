@@ -11,7 +11,7 @@ date: 2026-05-30
 
 ## Summary
 
-Rewrite the 角色与场景资产库 (Character & Scene Asset Library) from FastAPI + React/AntD on a single VM onto the yose-chat blueprint: a pnpm monorepo with TanStack Start + tRPC v11 + Drizzle + Neon + Vercel AI SDK on Vercel. Every existing feature across the four asset types (character, scene, prop, video benchmark) is preserved. Data migrates once to a fresh Neon database; TOS object keys are reused as-is. The current Python app stays running until a DNS swap at the end.
+Rewrite the 角色与场景资产库 (Character & Scene Asset Library) from FastAPI + React/AntD on a single VM onto the team's preferred TypeScript stack: a pnpm monorepo with a **Fastify API server (tRPC v11 + Drizzle + Neon)** and a **React 19 + TanStack Router SPA**, plus the Vercel AI SDK for OpenRouter calls. The app **deploys to a long-lived China-region host co-located with TOS-Beijing — not Vercel** — so the locality that makes today's app work is preserved. Auth is a single hard-wired admin account (env credentials + signed cookie; no better-auth, no user table). Every existing feature across the four asset types (character, scene, prop, video benchmark) is preserved. Data migrates once to a fresh Neon database; TOS object keys are reused as-is. The current Python app stays running until a DNS swap at the end.
 
 ---
 
@@ -24,11 +24,42 @@ The current app works, but four properties make every change expensive:
 - **All 56 routes live in `backend/main.py`.** Single-file growth pattern; module boundaries are implicit.
 - **Operations are manual and bespoke.** Single VM, hand-rolled `deploy/deploy-remote.sh`, systemd unit, Nginx + certbot + htpasswd config that is not in version control as code. No CI, no tests.
 
-The rebuild fixes all four by adopting the playbook: schema-derived types end-to-end, tRPC routers split per resource, serverless deploy via Vercel, Vitest + PGlite on day one, Biome instead of ad-hoc lint.
+The rebuild fixes all four by adopting the playbook patterns that fit: schema-derived types end-to-end, tRPC routers split per resource, a long-lived deploy on a China host co-located with TOS (not Vercel), Vitest + PGlite on day one, Biome instead of ad-hoc lint.
 
 > **On the playbook.** `docs/stack-playbook.md` is a reference menu, not a contract. We adopt the patterns that fit this project (schema-derived types, tRPC, Drizzle, Vitest/PGlite, Biome, the Zustand recipe) and deviate where the project needs something different — every deliberate deviation is recorded as a KTD (e.g., the Neon **WebSocket Pool** driver in U4, chosen over the playbook's default HTTP driver because U12 needs interactive transactions). "Follow §X" below means "use §X as the reference," not "copy it verbatim."
 
 > **Sequencing.** Build the new app first (Phases 1–4) against a fresh empty Neon DB; data migration is a separate later phase (Phase 5). The migration-specific findings (legacy `audio`/`video` asset kinds, the media-link table shape, the 56-route parity diff) are gated at Phase 5 — they do not block greenfield work, but each is a hard pre-cutover gate, not a best-effort step.
+
+---
+
+## Architecture: long-term vision and Milestone 1
+
+### Long-term destination (context — NOT built in M1)
+
+The asset library is the seed of a **video-generation benchmark platform**: test cases (a prompt plus reference assets) run against multiple models, producing generated videos that are then scored — structurally like SWE-bench, but for video. The pieces that implies — a generation harness (async provider calls with per-provider concurrency caps), a model registry, a media pipeline (ffmpeg thumbnails/HLS, HTTP range serving, multi-TB storage), human ratings + a leaderboard, run provenance, and eventually automated metrics (VBench / MLLM-as-judge, GPU) — all hang off **Postgres as the system of record plus a background worker**. M1 builds none of them; its only obligation is to avoid decisions that would foreclose them.
+
+### Milestone 1 — what we build
+
+The asset-library rebuild **at parity** (the 56 legacy routes) plus the one-shot data migration. Nothing from the benchmark-platform list above.
+
+### M1 stack
+
+| Layer | Choice |
+| --- | --- |
+| Server | **Fastify + `@trpc/server` Fastify adapter** — an open, standard Node API server (no Vercel, no SSR meta-framework) |
+| Frontend | React 19 + TanStack Router + TanStack Query + Vite 7, built as a **static SPA** served by nginx |
+| API | tRPC v11 + superjson |
+| Auth | **single hard-wired admin account** — env credentials + a signed session cookie; no better-auth, no user/session tables |
+| DB | **Neon** (Drizzle ORM + drizzle-zod), WebSocket Pool driver |
+| AI | Vercel AI SDK v6 + OpenRouter via the existing China-side proxy |
+| Storage | Volcengine TOS (cn-beijing), presigned URLs |
+| Long ops (image gen) | **long-lived HTTP request** on the host; durable pg-boss worker documented as the upgrade path (KTD-4) |
+| Lint / test / env | Biome 2 / Vitest 4 + PGlite / @t3-oss/env-core |
+| Deploy | systemd or container on a **China-region host (Volcengine) co-located with TOS-Beijing**, behind nginx |
+
+**Load-bearing decisions (locked because reversal is expensive):** the China-region long-lived host co-located with TOS; Neon Postgres as the system of record. **Additive later (deferred, no rework):** the background worker, the generation harness, the model/run/ratings schema, the media pipeline, automated metrics.
+
+**One accepted trade — Neon locality.** With compute in China and Neon's nearest region in Singapore, every DB query is a cross-border hop. This is the **status quo** — today's FastAPI app already runs China compute against Neon — so it is a known-tolerable hop, not a new risk; DB payloads are small, and the heavy bytes (images/video) stay China-local in TOS. If query latency ever bites, a China-region Postgres is the additive escape — Drizzle keeps the swap mechanical.
 
 ---
 
@@ -38,22 +69,23 @@ The rebuild fixes all four by adopting the playbook: schema-derived types end-to
 
 ```mermaid
 flowchart LR
-  B[Browser<br/>React 19 + TanStack Router + Query]
-  S[TanStack Start SSR<br/>Nitro / Vercel preset]
-  R[tRPC routers<br/>assets / scenes / props / benchmark / media / ai / exports / auth]
+  B[Browser<br/>React 19 SPA + TanStack Router + Query]
+  N[nginx<br/>China host]
+  S[Fastify API<br/>tRPC routers: assets / scenes / props / benchmark / media / ai / exports / auth]
   D[(Neon Postgres<br/>Drizzle ORM)]
-  T[(Volcengine TOS<br/>S3-compatible)]
-  A[OpenRouter<br/>via Vercel AI SDK]
+  T[(Volcengine TOS<br/>cn-beijing, S3-compatible)]
+  A[OpenRouter<br/>via Vercel AI SDK + China proxy]
 
-  B -- tRPC over HTTPS<br/>superjson --> S
+  B -- static assets --> N
+  B -- tRPC over HTTPS<br/>superjson --> N
+  N -- reverse-proxy /api --> S
   B -- presigned image URL --> T
-  S --> R
-  R --> D
-  R -- presign + write --> T
-  R --> A
+  S --> D
+  S -- presign + write --> T
+  S --> A
 ```
 
-The browser only talks to two endpoints in normal operation: TanStack Start (which mounts tRPC at `/api/trpc/*`) and TOS directly via presigned URLs. AI calls and TOS writes happen server-side.
+nginx on the China host serves the static SPA build and reverse-proxies `/api/*` to the Fastify server. In normal operation the browser talks to two places: the API (through nginx) and TOS directly via presigned URLs. AI calls and TOS writes happen server-side.
 
 ### Data model
 
@@ -64,7 +96,6 @@ erDiagram
   VIDEO_BENCHMARK_ITEMS ||--o{ VIDEO_BENCHMARK_MEDIA_LINKS : links
   VIDEO_BENCHMARK_ITEMS ||--o{ BENCHMARK_ITEM_COMMENTS : has
   ASSET_IMAGES ||--o{ VIDEO_BENCHMARK_MEDIA_LINKS : referenced_by
-  USERS ||--o{ SESSIONS : has
 
   ASSETS {
     bigserial id PK
@@ -112,14 +143,9 @@ erDiagram
     text body
     timestamptz created_at
   }
-  USERS {
-    text id PK
-    text email
-    text role "admin"
-  }
 ```
 
-This is the **hybrid** modeling decision (KTD-1): `kind`, `name`, `era`, `genre` get promoted to columns because they appear in every asset type and drive filters; everything else stays in `data` JSONB. Drizzle-zod generates the base row type, and we layer a Zod discriminated union (`character | scene | prop`) on top of `data` so each variant carries its own field shape.
+There is **no users/sessions table** — auth is a single env-configured admin account verified at login, carried by a signed session cookie (KTD-3). This is the **hybrid** modeling decision (KTD-1): `kind`, `name`, `era`, `genre` get promoted to columns because they appear in every asset type and drive filters; everything else stays in `data` JSONB. Drizzle-zod generates the base row type, and we layer a Zod discriminated union (`character | scene | prop`) on top of `data` so each variant carries its own field shape.
 
 ### Long-running operation flow (batch regenerate / export)
 
@@ -127,8 +153,8 @@ This is the **hybrid** modeling decision (KTD-1): `kind`, `name`, `era`, `genre`
 sequenceDiagram
   participant U as User
   participant W as Browser (Zustand store)
-  participant S as TanStack Start
-  participant T as tRPC procedure (httpSubscriptionLink / SSE)
+  participant S as Fastify API
+  participant T as tRPC subscription (SSE)
   participant AI as OpenRouter
   participant TOS as Volcengine TOS
 
@@ -147,15 +173,15 @@ sequenceDiagram
   W->>W: store.finish()
 ```
 
-Streaming a tRPC subscription keeps progress visible without a queue. The `maxDuration` setting on the Vercel function caps the run; if a batch exceeds it, the client resumes the unfinished IDs in a follow-up subscription. There is no shared mutable state on the server — each yielded item is durable in DB the moment it's emitted.
+Streaming a tRPC subscription over SSE keeps batch progress visible without a queue. On a long-lived host there is no function-duration ceiling to fight, so the stream simply runs to completion; each yielded item is durable in DB the moment it's emitted, so a dropped connection just means the client re-subscribes for the unfinished IDs. **Single image generation — the common case — is a plain long-lived HTTP request, no streaming needed.** Durability across tab-close/restart (a server-side queue) is the documented pg-boss upgrade (KTD-4), not an M1 feature.
 
 ### Cutover
 
 ```mermaid
 stateDiagram-v2
   [*] --> OldLive: today
-  OldLive --> BothLive: Vercel deploy + staging Neon DB
-  BothLive --> NewLive: DNS swap (benchmark.jy-video.cn → Vercel)
+  OldLive --> BothLive: deploy to China host + staging Neon DB
+  BothLive --> NewLive: DNS swap (benchmark.jy-video.cn → new host)
   NewLive --> OldDecommissioned: 14 days after DNS swap
   OldDecommissioned --> [*]
 
@@ -172,38 +198,38 @@ stateDiagram-v2
 ```
 asset-library-next/
 ├── apps/
-│   └── web/
-│       ├── src/
-│       │   ├── routes/                # TanStack Router file-based routes
-│       │   │   ├── __root.tsx
-│       │   │   ├── index.tsx          # redirect → /characters
-│       │   │   ├── login.tsx
-│       │   │   ├── (assets)/
-│       │   │   │   ├── characters.tsx
-│       │   │   │   ├── scenes.tsx
-│       │   │   │   └── props.tsx
-│       │   │   ├── benchmark.tsx
-│       │   │   └── api/
-│       │   │       ├── $.ts           # tRPC handler catch-all
-│       │   │       └── auth/
-│       │   │           └── $.ts       # better-auth handler
-│       │   ├── components/
-│       │   │   ├── asset-library/
-│       │   │   ├── drawers/
-│       │   │   ├── benchmark/
-│       │   │   └── ui/                # coss UI (generated, don't edit)
-│       │   ├── lib/
-│       │   │   ├── trpc.ts
-│       │   │   └── auth-client.ts
-│       │   ├── stores/                # zustand stores
-│       │   │   └── batch-regenerate.ts
-│       │   └── styles/
-│       │       └── tailwind.css
-│       ├── components.json            # coss UI
-│       ├── app.config.ts              # TanStack Start
-│       └── vite.config.ts
+│   ├── web/                            # React SPA (Vite, no SSR)
+│   │   ├── index.html
+│   │   ├── src/
+│   │   │   ├── main.tsx                # SPA entry: createRouter + RouterProvider
+│   │   │   ├── routes/                 # TanStack Router (client-only)
+│   │   │   │   ├── __root.tsx
+│   │   │   │   ├── index.tsx           # redirect → /characters
+│   │   │   │   ├── login.tsx
+│   │   │   │   ├── (assets)/
+│   │   │   │   │   ├── characters.tsx
+│   │   │   │   │   ├── scenes.tsx
+│   │   │   │   │   └── props.tsx
+│   │   │   │   └── benchmark.tsx
+│   │   │   ├── components/
+│   │   │   │   ├── asset-library/
+│   │   │   │   ├── drawers/
+│   │   │   │   ├── benchmark/
+│   │   │   │   └── ui/                 # coss UI (generated, don't edit)
+│   │   │   ├── lib/
+│   │   │   │   ├── trpc.ts             # client → API base URL (/api/trpc)
+│   │   │   │   └── auth-client.ts      # login/logout + session check
+│   │   │   ├── stores/                 # zustand stores
+│   │   │   │   └── batch-regenerate.ts
+│   │   │   └── styles/
+│   │   │       └── tailwind.css
+│   │   ├── components.json             # coss UI
+│   │   └── vite.config.ts              # SPA build (no Nitro)
+│   └── server/                         # Fastify host
+│       └── src/
+│           └── index.ts                # Fastify bootstrap + fastifyTRPCPlugin + auth routes
 ├── packages/
-│   ├── server/
+│   ├── server/                         # domain code (imported by apps/server)
 │   │   └── src/
 │   │       ├── routers/
 │   │       │   ├── assets.ts
@@ -219,15 +245,13 @@ asset-library-next/
 │   │       │   └── exports/           # ZIP + XLSX assembly
 │   │       ├── db/
 │   │       │   ├── schema.ts
-│   │       │   ├── auth.gen.ts        # generated by better-auth CLI
-│   │       │   └── index.ts
+│   │       │   └── index.ts           # Drizzle client (Neon WebSocket Pool)
 │   │       ├── auth/
-│   │       │   └── index.ts
-│   │       ├── trpc/
-│   │       │   ├── index.ts           # appRouter export
-│   │       │   ├── context.ts
-│   │       │   └── procedures.ts      # protected/admin procedure builders
-│   │       └── api-handler.ts
+│   │       │   └── index.ts           # single-account verify + signed-cookie helpers
+│   │       └── trpc/
+│   │           ├── index.ts           # appRouter export
+│   │           ├── context.ts         # reads + verifies session cookie
+│   │           └── procedures.ts      # public / protected procedure builders
 │   └── shared/
 │       └── src/
 │           ├── env.ts                 # @t3-oss/env-core
@@ -245,6 +269,7 @@ asset-library-next/
 │   └── seed.ts                        # 76 characters + 55 scenes + props
 ├── tools/
 │   └── migrate-from-legacy/           # one-shot Python→Neon data migration
+├── deploy/                            # nginx conf + systemd unit / Dockerfile for the China host
 ├── pnpm-workspace.yaml
 ├── .npmrc                             # node-linker=hoisted
 ├── tsconfig.base.json
@@ -293,12 +318,12 @@ asset-library-next/
 
 ### Auth
 
-- R19. The app sits behind a single admin login backed by better-auth (email + password). All tRPC procedures except `auth.*` and `health` require a session.
+- R19. The app sits behind a single hard-wired admin login (env-configured email + password, verified server-side; a signed http-only session cookie carries the session). No better-auth, no user/session tables. All tRPC procedures except `auth.*` and `health` require a valid session.
 
 ### Migration and cutover
 
 - R20. A one-shot script migrates every row from the existing Neon DB into the new schema. TOS object keys are copied verbatim — image bytes are not re-uploaded.
-- R21. The cutover is staged: deploy new app to Vercel against a staging copy of the DB → freeze writes on the old app → run migration → DNS swap.
+- R21. The cutover is staged: deploy new app to the China host against a staging copy of the DB → freeze writes on the old app → run migration → DNS swap.
 - R22. Rollback is reversible within 24 hours of cutover by flipping DNS back; the old DB is left untouched for 14 days.
 
 ### Quality and ops
@@ -315,13 +340,13 @@ asset-library-next/
 
 - **KTD-2. Fresh Neon DB, one-shot SQL migration.** The current schema has 13 incremental migrations and naming inconsistencies (e.g., `media_type` added late). Designing the Drizzle schema cleanly and migrating once is cheaper than carrying every legacy quirk forward. The one-shot is a Drizzle script (TypeScript, runs against both DBs) — not raw SQL — so it can validate Zod shapes during the copy and surface bad rows early.
 
-- **KTD-3. Single-admin auth via better-auth.** Mirrors current Basic Auth behavior (one shared login, no per-user data). Uses better-auth's email+password core only. The playbook (§2) lists `admin`, `phoneNumber`, and `emailOTP` as available better-auth plugins — those are options on the menu, and we deliberately omit all three: a single shared admin login needs none of them. Extending to multi-user later is additive — add the `admin()` plugin and a `role` column. We pick better-auth (not raw cookies) for parity with other team projects and to get session management (and the login rate-limit in U8) for free.
+- **KTD-3. Single hard-wired admin account — no auth library.** The current app is one shared Basic-Auth login with no per-user data; M1 keeps exactly that. Credentials come from env (`ADMIN_EMAIL` / `ADMIN_PASSWORD`); the login endpoint verifies them (constant-time compare) and sets a signed, http-only session cookie (HMAC via `SESSION_SECRET`). No better-auth, no `users`/`sessions` tables, no auth-table generation — this is the smallest thing that satisfies R19. The earlier draft chose better-auth for team parity; we drop it here because a single account doesn't need session storage, plugins, or a user table, and the library is pure overhead at this scale. Extending to real multi-user auth later is additive — drop in better-auth (the playbook §2 option) and a `users` table at that point, not now.
 
-- **KTD-4. SSE-streamed tRPC subscriptions for long-running ops; no queue.** Vercel functions allow up to 300s on Pro; batch regen with ~30s per image gets ~10 items per stream. The client orchestrates resumption for larger batches. Adding Inngest or Trigger.dev is the right escape valve later, but introducing it now costs infra setup without buying anything the streamed approach can't deliver. Recorded as a Risk (see Risk Analysis) so the next reviewer sees the trade.
+- **KTD-4. Long-lived HTTP for single image-gen; SSE stream for batch progress; durable worker deferred.** We deploy on a long-lived host, so there is no serverless duration ceiling — a single image generation (the common case, ~minutes) is just a normal HTTP request. Batch regenerate streams per-item progress over an SSE tRPC subscription; each item is persisted before it's yielded, so a dropped connection means the client re-subscribes for the unfinished IDs. **The limit we knowingly accept for M1:** a closed tab / network drop loses the *in-flight* item, with no server-side queue record and no retry. The documented upgrade when that bites (or when video-gen lands) is a **Postgres-backed pg-boss worker** — `POST` enqueues a job and returns an id, the worker processes it, the client reads progress. Because we're already on a long-lived host with Postgres, that upgrade is additive (no re-platform); it is explicitly out of M1 scope. Recorded as a Risk (see Risk Analysis) so the next reviewer sees the trade.
 
 - **KTD-5. Direct TOS presigned URLs handed to the client at query time.** Saves a Vercel function invocation per image and avoids the cold-start penalty on the proxy hop. The downside is exposing `*.volces.com` in the network panel; acceptable for an internal admin tool. The current `/images/{key}` redirect is replaced by `getPresignedUrl()` returning the signed URL inside each asset payload, with a 1-hour TTL.
 
-- **KTD-6. tRPC v11, never TanStack Start `createServerFn`.** Per playbook §3 ("Always tRPC, never TanStack Start server functions"). Gives isomorphic client + vanilla caller in one type system; vanilla caller is needed inside Zustand actions (batch regenerate).
+- **KTD-6. tRPC v11 as the only API surface.** All client↔server calls go through tRPC, mounted on Fastify via `@trpc/server`'s `fastifyTRPCPlugin` — the playbook's "always tRPC" rule, minus the TanStack-Start-specific framing since we're not running an SSR meta-framework. tRPC gives an isomorphic client plus a vanilla caller in one type system; the vanilla caller is needed inside Zustand actions (batch regenerate).
 
 - **KTD-7. Vercel AI SDK v6 + `@openrouter/ai-sdk-provider`.** Keeps the existing OpenRouter API key working; standardizes on a single SDK for both text and image. For image generation we use `experimental_generateImage` from `ai` v6 with the OpenRouter provider — current model `gpt-5.4-image-2` continues to work through OpenRouter's image endpoint.
 
@@ -347,7 +372,7 @@ In scope: every feature catalogued in this plan's Requirements. Behavior parity 
 - Full-text search beyond ILIKE on `name` and `data`.
 - Multi-user roles and per-user permissions (single admin only on day one).
 - Replicated TOS / multi-region storage.
-- Background job infrastructure (Inngest / Trigger.dev) — only added if batch regen outgrows SSE.
+- Background job infrastructure (a Postgres-backed pg-boss worker) — documented in KTD-4 as the upgrade path; added when batch regen needs durability or video-gen lands, not in M1.
 
 ### Outside this product's identity
 
@@ -381,38 +406,39 @@ Units group into five phases by dependency. Each phase should land before the ne
 - **Test scenarios:** Test expectation: none — pure scaffolding, exercised by every later unit.
 - **Verification:** `pnpm install`, `pnpm lint`, `pnpm typecheck` all succeed at the root.
 
-#### U2. App shell — TanStack Start + Nitro + Tailwind + coss UI
+#### U2. App shell — Fastify server + Vite React SPA + Tailwind + coss UI
 
-- **Goal:** boot a hello-world page served by TanStack Start on Vite, deployable to Vercel, with Tailwind v4 and coss UI ready to use.
+- **Goal:** boot a Fastify API server and a hello-world React SPA (Vite) that reaches it, with Tailwind v4 and coss UI ready to use. No SSR, no Vercel.
 - **Requirements:** R23 (Vitest projects), R24
 - **Dependencies:** U1
 - **Files:**
-  - `apps/web/app.config.ts`
-  - `apps/web/vite.config.ts`
+  - `apps/server/src/index.ts` (Fastify bootstrap; `@fastify/cors` for the SPA origin; plain `/health` route)
+  - `apps/web/index.html`
+  - `apps/web/vite.config.ts` (SPA build: `@vitejs/plugin-react`, `vite-tsconfig-paths`, `@tailwindcss/vite`; dev proxy `/api` → Fastify port)
+  - `apps/web/src/main.tsx` (createRouter + RouterProvider)
   - `apps/web/src/routes/__root.tsx`
   - `apps/web/src/routes/index.tsx`
   - `apps/web/src/styles/tailwind.css`
   - `apps/web/components.json` (coss UI config)
   - `vitest.config.ts` at root with `test.projects` declaration for `web`, `server`, `shared`
-- **Approach:** Plugin order in `vite.config.ts` per playbook §5.1: `tsConfigPaths` → `tanstackStart()` → `nitro({ preset: 'vercel' })` → `viteReact()` → `tailwindcss()`. Initialize coss UI per playbook §5.6 (read `coss.com/ui/llms.txt` first, don't reach for shadcn patterns). Add a single dummy button to prove the design system works.
-- **Patterns to follow:** `docs/stack-playbook.md` §5.1 and §5.6 as reference.
+- **Approach:** Fastify with `@fastify/cors` allowing the SPA origin; a plain `/health` route for now (tRPC mounts in U3). Vite SPA with React + Tailwind v4 plugin + tsconfig-paths; in dev, Vite proxies `/api` to the Fastify port (nginx does the same in prod). Initialize coss UI per playbook §5.6 (read `coss.com/ui/llms.txt` first, don't reach for shadcn patterns). Add a single dummy button to prove the design system works.
+- **Patterns to follow:** `docs/stack-playbook.md` §5.6 (coss UI) and §3 (Zustand/tRPC rules) as reference. The playbook's TanStack-Start / Nitro / Vercel setup (§5.1) is intentionally **not** followed — see KTD-6 and the Architecture section.
 - **Test scenarios:**
-  - Happy path: `pnpm --filter web dev` serves the root page; vitest `web` project boots and runs a smoke test asserting `__root.tsx` renders without errors.
-- **Verification:** root page renders in the browser; smoke test passes.
+  - Happy path: `pnpm --filter server dev` serves `/health`; `pnpm --filter web dev` serves the SPA root; vitest `web` project boots and runs a smoke test asserting `__root.tsx` renders without errors.
+- **Verification:** SPA root renders in the browser and reaches the Fastify `/health`; smoke test passes.
 
 #### U3. tRPC v11 + TanStack Query + superjson wiring
 
-- **Goal:** end-to-end typed RPC call from the browser to the server with `superjson` transport, mounted as a TanStack Start catch-all.
+- **Goal:** end-to-end typed RPC call from the browser SPA to the Fastify server with `superjson` transport, mounted via the tRPC Fastify adapter.
 - **Requirements:** baseline for every server-side R.
 - **Dependencies:** U2
 - **Files:**
   - `packages/server/src/trpc/index.ts` (`appRouter` export with one `health` procedure)
   - `packages/server/src/trpc/context.ts`
   - `packages/server/src/trpc/procedures.ts` (publicProcedure, protectedProcedure stubs)
-  - `packages/server/src/api-handler.ts`
-  - `apps/web/src/routes/api/$.ts`
-  - `apps/web/src/lib/trpc.ts` (client + vanilla caller via `createClientCaller()`)
-- **Approach:** Per playbook §5.2. Export `AppRouter` type from the server entry; client imports the type only. Vanilla caller (`trpcClient`) for use inside Zustand actions later. `superjson` transformer on both ends. Health procedure returns `{ ok: true, ts: Date }` so the Date round-trips through superjson and confirms the transformer.
+  - `apps/server/src/index.ts` (extended: register `fastifyTRPCPlugin` at `/api/trpc`)
+  - `apps/web/src/lib/trpc.ts` (client + vanilla caller; `httpBatchLink` → `/api/trpc`)
+- **Approach:** Per playbook §5.2 for the tRPC + superjson shape; transport is mounted on Fastify via `@trpc/server/adapters/fastify` (`fastifyTRPCPlugin`) rather than a TanStack Start catch-all. Export `AppRouter` type from the server entry; client imports the type only. Vanilla caller (`trpcClient`) for use inside Zustand actions later. `superjson` transformer on both ends. Health procedure returns `{ ok: true, ts: Date }` so the Date round-trips through superjson and confirms the transformer.
 - **Test scenarios:**
   - Happy path (server): calling `appRouter.createCaller(...).health()` returns `{ ok: true, ts: <Date instance> }`.
   - Integration: a React component using `trpc.health.useQuery()` renders the timestamp; PGlite not required since this procedure touches no DB.
@@ -427,7 +453,7 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `packages/shared/src/env.ts`
   - `packages/server/src/db/index.ts` (configured Drizzle client with Neon WebSocket Pool driver — no schema yet)
   - `.env.example` at root
-- **Approach:** Per playbook §5.8. Server-only vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `TOS_BUCKET`, `TOS_REGION`, `TOS_ENDPOINT`, `TOS_ACCESS_KEY_ID`, `TOS_SECRET_ACCESS_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`. Client vars (none yet — UI text is all in-bundle). `runtimeEnv: process.env`. **Driver decision (deviation from playbook §5.3):** use the `@neondatabase/serverless` **WebSocket Pool** driver (`Pool` + `drizzle-orm/neon-serverless`), not the HTTP/fetch driver. The HTTP driver only supports non-interactive batched transactions; U12 needs an interactive `db.transaction()` (upsert an item, read its generated id, then insert media links keyed on that id, rolling back the item if a link fails). The Pool driver is the one authoritative client for the whole app so transactional and non-transactional paths share it.
+- **Approach:** Per playbook §5.8. Server-only vars: `DATABASE_URL`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` (the China-side proxy), `TOS_BUCKET`, `TOS_REGION`, `TOS_ENDPOINT`, `TOS_ACCESS_KEY_ID`, `TOS_SECRET_ACCESS_KEY`, `SESSION_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`. Client vars (none yet — UI text is all in-bundle). `runtimeEnv: process.env`. **Driver decision (deviation from playbook §5.3):** we keep Neon (per the locality trade in the Architecture section), and use the `@neondatabase/serverless` **WebSocket Pool** driver (`Pool` + `drizzle-orm/neon-serverless`), not the HTTP/fetch driver. The HTTP driver only supports non-interactive batched transactions; U12 needs an interactive `db.transaction()` (upsert an item, read its generated id, then insert media links keyed on that id, rolling back the item if a link fails). On a long-lived host the persistent WebSocket pool is also the natural fit. The Pool driver is the one authoritative client for the whole app so transactional and non-transactional paths share it.
 - **Test scenarios:**
   - Happy path: env loads with all required vars; `db.execute(sql\`select 1\`)` returns 1.
   - Error path: missing `DATABASE_URL` causes module-load to throw before any handler runs.
@@ -435,14 +461,13 @@ Units group into five phases by dependency. Each phase should land before the ne
 
 ### Phase 2 — Data layer
 
-#### U5. Drizzle schema — assets, asset_images, auth tables
+#### U5. Drizzle schema — assets, asset_images
 
 - **Goal:** the full asset-side schema in Drizzle, with relations, soft-delete columns, and the discriminated-union Zod schema layered on `data`.
-- **Requirements:** R1, R2, R4, R5, R10, R19
+- **Requirements:** R1, R2, R4, R5, R10
 - **Dependencies:** U4
 - **Files:**
   - `packages/server/src/db/schema.ts` (assets, assetImages tables; `cover_image_id` self-FK pattern)
-  - `packages/server/src/db/auth.gen.ts` (generated by `npx @better-auth/cli generate`; never hand-edit per playbook §5.4)
   - `packages/shared/src/schemas/assets.ts` (drizzle-zod-derived base + discriminated union on `data`)
   - `packages/shared/src/constants/orderings.ts` (TYPE_ORDER, GENRE_ORDER, AGE_ORDER carried verbatim from current `backend/db.py`)
   - `drizzle.config.ts`
@@ -510,23 +535,24 @@ Units group into five phases by dependency. Each phase should land before the ne
 
 ### Phase 3 — Server layer
 
-#### U8. better-auth setup — single admin
+#### U8. Single-account auth — env credentials + signed cookie
 
-- **Goal:** email+password auth with sessions, mounted at `/api/auth/$`, no plugins beyond email+password.
+- **Goal:** a single admin login with no auth library and no DB tables: verify env credentials, set a signed http-only session cookie; `protectedProcedure` checks it.
 - **Requirements:** R19
-- **Dependencies:** U5
+- **Dependencies:** U3
 - **Files:**
-  - `packages/server/src/auth/index.ts`
-  - `apps/web/src/routes/api/auth/$.ts`
-  - `apps/web/src/lib/auth-client.ts`
-  - `packages/server/src/trpc/context.ts` (extend to read session)
-  - `packages/server/src/trpc/procedures.ts` (`protectedProcedure` checks session)
-- **Approach:** Per playbook §5.4. better-auth reads/writes the same Drizzle client; generated tables come from `npx @better-auth/cli generate` and land in `auth.gen.ts`. Context derives `session` from cookies; `protectedProcedure` throws `UNAUTHORIZED` if absent. Seed script inserts the first admin user from env-provided credentials (`ADMIN_EMAIL` / `ADMIN_PASSWORD`).
-  - **Login rate-limiting (in scope):** enable better-auth's rate-limit on the sign-in path (per-IP attempt cap + backoff). The single admin login is full-blast-radius under credential stuffing, so this is a cheap, required control rather than deferred hardening.
+  - `packages/server/src/auth/index.ts` (verify credentials; sign/verify session cookie via HMAC)
+  - `apps/server/src/index.ts` (extend: `@fastify/cookie`, `POST /api/auth/login`, `POST /api/auth/logout`)
+  - `apps/web/src/lib/auth-client.ts` (login/logout calls + session check)
+  - `packages/server/src/trpc/context.ts` (read + verify the session cookie)
+  - `packages/server/src/trpc/procedures.ts` (`protectedProcedure` rejects without a valid session)
+- **Approach:** Login compares the posted email/password against `ADMIN_EMAIL` / `ADMIN_PASSWORD` with a constant-time compare; on success it sets an http-only, `SameSite=Lax`, `Secure` cookie holding an HMAC-signed token (`SESSION_SECRET`) plus an expiry. Context verifies signature + expiry to populate `session`; `protectedProcedure` throws `UNAUTHORIZED` otherwise. No `users` / `sessions` tables, no better-auth.
+  - **Login rate-limiting (in scope):** a small per-IP attempt cap with backoff on the login route (`@fastify/rate-limit` scoped to `/api/auth/login`, or an equivalent nginx limit). The single login is full-blast-radius under credential stuffing, so this stays a required control even without an auth library.
 - **Test scenarios:**
-  - Happy path: sign-in with seed credentials → cookie set → subsequent `protectedProcedure` call succeeds.
-  - Error: `protectedProcedure` without cookie → `UNAUTHORIZED`; expired session → re-login required.
-- **Verification:** server tests in `packages/server/src/auth/__tests__/auth.test.ts` cover happy + unauthorized.
+  - Happy path: login with env credentials → signed cookie set → a subsequent `protectedProcedure` call succeeds.
+  - Error: wrong password → 401, no cookie; missing / forged / expired cookie → `protectedProcedure` returns `UNAUTHORIZED`.
+  - Rate limit: N rapid failed logins from one IP → subsequent attempts throttled.
+- **Verification:** server tests in `packages/server/src/auth/__tests__/auth.test.ts` cover sign/verify, happy, unauthorized, and a tampered-cookie case (modified token fails verification).
 
 #### U9. AI service — Vercel AI SDK + OpenRouter, prompt registry
 
@@ -633,9 +659,9 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `packages/server/src/routers/__tests__/exports.test.ts`
 - **Approach:**
   - `mediaAssetsRouter.list({ kind?, mediaType?, dedup })`: joins `asset_images` to `assets`, optionally dedups by `object_key`, returns presigned URLs.
-  - `mediaAssetsRouter.upload`: tRPC procedure accepting `{ kind, file: base64 | FormData }`. Inserts the image row + uploads to TOS in a single transaction (the TOS write happens first; on insert failure, schedule a deferred delete to avoid leaking objects — recorded as a Risk). **Upload size cap (in scope):** enforce a hard `Content-Length` limit (reject oversized uploads before reading the body) so a single authenticated upload can't exhaust the Vercel function memory or inflate the bucket unbounded. This is the one upload control we pull forward; deeper validation (dimension, MIME sniff) stays deferred.
+  - Upload path: a Fastify multipart route (`@fastify/multipart`) streams the file to the storage service and returns the resulting `object_key`; the tRPC `mediaAssetsRouter.attach` then inserts the image row. The TOS write happens first; on insert failure, schedule a deferred delete to avoid leaking objects (recorded as a Risk). **Upload size cap (in scope):** enforce a hard `Content-Length` / multipart byte limit (reject oversized uploads before buffering the body) so a single authenticated upload can't exhaust host memory or inflate the bucket unbounded. This is the one upload control we pull forward; deeper validation (dimension, MIME sniff) stays deferred.
   - `aiRouter.generatePrompt({ kind, input })`, `extractFields({ kind, description })`, `generateImage({ kind, id, prompt, refImage?, aspectRatio? })`. Each maps to the matching AI service function and persists results.
-  - `exportsRouter.exportZip({ kind, filters, search })`: returns a `ReadableStream` via tRPC's `streamResponse` (raw HTTP), assembled with `archiver` (ZIP) + `exceljs` (XLSX). Streaming avoids buffering hundreds of MB in a Vercel function.
+  - `exportsRouter.exportZip({ kind, filters, search })`: streams a ZIP over a raw Fastify route, assembled with `archiver` (ZIP) + `exceljs` (XLSX). Streaming avoids buffering hundreds of MB in memory on the host.
 - **Technical design (directional):**
   ```ts
   // packages/server/src/services/exports/index.ts — directional
@@ -669,7 +695,6 @@ Units group into five phases by dependency. Each phase should land before the ne
   - `packages/server/src/routers/exports.ts` (extended with `exportZipStream` subscription)
   - `packages/server/src/routers/__tests__/ai-batch.test.ts`
   - `apps/web/src/lib/trpc.ts` (configure `httpSubscriptionLink` for SSE)
-  - `apps/web/app.config.ts` (`maxDuration: 300` on Vercel for the streaming function)
 - **Approach:**
   - Subscription emits `{ id, status: "pending" | "done" | "failed", imageKey?, error? }` per item.
   - Resumption contract: client retains a `Set<id>` of completed items; on stream end without `status: "complete"`, client invokes the subscription again with the remaining IDs.
@@ -816,20 +841,22 @@ Units group into five phases by dependency. Each phase should land before the ne
   - Idempotency: run twice → second run inserts zero new rows.
 - **Verification:** dry-run on a snapshot of production Neon completes within 30 minutes; failure count fits a one-page report we can review.
 
-#### U21. Vercel deployment + custom domain
+#### U21. China-host deployment + custom domain
 
-- **Goal:** new app reachable at a Vercel preview URL with all env vars configured; staging Neon DB connected; smoke flow works end-to-end.
+- **Goal:** new app reachable on the China host (Volcengine, co-located with TOS) at a staging hostname with all env vars configured; staging Neon DB connected; smoke flow works end-to-end.
 - **Requirements:** R10, R11, R19
 - **Dependencies:** U2, U4, U15
 - **Files:**
-  - `vercel.json` (project config — `maxDuration` for streaming functions)
-  - `apps/web/app.config.ts` (Nitro `vercel` preset already set in U2; this unit confirms the production build emits the right output)
+  - `deploy/asset-library.service` (systemd unit for the Fastify server) — or a `Dockerfile` + compose if containerized
+  - `deploy/nginx-asset-library.conf` (serve the SPA build; reverse-proxy `/api` → Fastify; raised `proxy_read_timeout` to cover long image-gen requests)
+  - server-side `.env` provisioning (secrets never committed)
 - **Approach:**
-  - Vercel project linked to the new repo; production branch `main`, preview branches for PRs.
-  - Env vars set in Vercel dashboard from the same values used locally; secrets via Vercel encrypted env.
-  - DNS: a temporary `staging.asset-library.<our-domain>` CNAME → Vercel for pre-cutover testing.
+  - Build the SPA (`pnpm --filter web build`) to static files; nginx serves them and reverse-proxies `/api/*` to the Fastify process.
+  - Fastify runs under systemd (or a container) on the China host; env from a server-side file, not committed.
+  - Raise nginx `proxy_read_timeout` / `proxy_send_timeout` past the longest image-gen call (the legacy app already does this — carry the value over).
+  - DNS: a temporary `staging.benchmark.jy-video.cn` → the host for pre-cutover testing.
 - **Test scenarios:** Test expectation: none — purely infrastructure; verified by U22's dress rehearsal.
-- **Verification:** preview URL loads, login works, a character round-trips through the staging DB.
+- **Verification:** staging hostname loads the SPA, login works, a character round-trips through the staging DB, and one image generation completes without an nginx timeout.
 
 #### U22. Cutover dress rehearsal and production switch
 
@@ -850,7 +877,7 @@ Units group into five phases by dependency. Each phase should land before the ne
     2. T-60min: scale old app's write endpoints to read-only via a feature flag on the FastAPI side, or stop the systemd unit.
     3. T-30min: snapshot production Neon.
     4. T-15min: run `migrate.ts` from prod into the new Neon DB.
-    5. T-0: DNS swap `benchmark.jy-video.cn` from the VM IP to the Vercel apex.
+    5. T-0: DNS swap `benchmark.jy-video.cn` from the old VM IP to the new China host.
     6. T+5min: smoke-test the new app on the real domain.
     7. T+10min: announce cutover complete.
   - **Rollback window:** old app is left running but DNS-detached for 14 days. Flipping DNS back reverses the cutover; the new app's writes during that window are lost (acceptable for an internal tool with users available to recreate them).
@@ -861,20 +888,20 @@ Units group into five phases by dependency. Each phase should land before the ne
 
 ## Risk Analysis and Mitigation
 
-- **Risk: Vercel function 300s ceiling on Pro is not enough for very large batch regenerates.** Mitigation: client-side resumption (U14) caps each subscription to ~10 items and re-subscribes; for batches > 100 items, document the expected runtime. Escalation: introduce Inngest if a real-world batch hits the ceiling repeatedly.
-- **Risk: Vercel cold start adds latency to first interaction.** Mitigation: the playbook stack is built for this; we accept the latency. Health check warm-up via Vercel cron is the next-step option if it's painful.
+- **Risk: a closed tab / network drop loses an in-flight batch item (no server-side queue in M1).** Mitigation: each item is persisted before it's yielded, so re-subscribing skips completed IDs; only the single in-flight item is lost and can be re-run. Escalation: the pg-boss worker (KTD-4) makes batches fully durable — added when this bites or when video-gen lands.
+- **Risk: long image-gen HTTP requests hit proxy/client timeouts.** Mitigation: raise nginx `proxy_read_timeout` past the longest generation (U21) and show a long-running spinner in the UI; the long-lived host itself has no duration ceiling. Escalation: the pg-boss worker removes long-held connections entirely.
 - **Risk: TOS endpoint exposed in the browser via presigned URLs.** Mitigation: short TTL (1 hour); URLs are tied to specific object keys. Acceptable for an internal admin app. Revisit if the app ever serves external users.
 - **Risk: Zod discriminated union on `data` doesn't catch DB-direct edits.** Mitigation: all writes go through tRPC procedures that validate inputs. Direct SQL edits (admin in psql) bypass validation by design.
-- **Risk: better-auth schema generation drifts from manual schema edits.** Mitigation: `auth.gen.ts` is never hand-edited; regenerate after every better-auth version bump.
+- **Risk: a leaked or weak `SESSION_SECRET` lets an attacker forge admin sessions.** Mitigation: a long random secret from env only, never committed; rotating it invalidates all sessions. Single-account blast radius is the whole app, so the secret is treated like a production credential.
 - **Risk: OpenRouter changes the model ID or pricing for `gpt-5.4-image-2`.** Mitigation: model IDs are env-configurable; rollout to a new model is one env var + a smoke test.
 - **Risk: legacy data has rows the new Zod schemas reject (notably `audio`/`video` asset kinds and unmapped media-link roles).** Mitigation: U20 logs every failure with counts; the dress rehearsal (U22) treats a non-zero, unaccounted failure set as a cutover blocker — not a warning — and reserves time for the `audio`/`video` disposition decision and the link-role rename map before the production run.
-- **Risk: image uploads via tRPC base64 inflate request payload for large files.** Mitigation: upload procedure accepts `FormData` via a small TanStack Start raw route that delegates to the storage service; tRPC procedure receives only the resulting `object_key`. Documented in U13.
+- **Risk: large image uploads inflate request payloads / exhaust host memory.** Mitigation: uploads go through a Fastify multipart route (`@fastify/multipart`) that streams to the storage service and enforces the Content-Length / byte cap (U13); the tRPC procedure receives only the resulting `object_key`. Documented in U13.
 
 ---
 
 ## Dependencies and Prerequisites
 
-- A new Vercel project linked to the new git repo (created at U21).
+- A China-region host (Volcengine) co-located with TOS-Beijing, with nginx + systemd (or a container runtime), provisioned at U21.
 - A new Neon DB (free or pro tier — same plan as current).
 - The existing TOS bucket and credentials reused as-is.
 - An OpenRouter API key with the same model entitlements as today.
@@ -888,8 +915,8 @@ Units group into five phases by dependency. Each phase should land before the ne
 These do not block planning, but should be resolved before U21 / U22 fire:
 
 - **Repo name.** Suggested `asset-library-next`; final TBD.
-- **Vercel plan tier.** Hobby caps functions at 10s — too short for image generation. Pro (300s) is the minimum; confirm the team has Pro.
-- **Single admin credential storage.** Plain env var, or a one-time bootstrap flow that creates the user from the seed script and stores the hash in DB? Default: env-provided email, password set via seed script and persisted via better-auth's normal flow.
+- **Host sizing.** The China host (Volcengine) carries the Fastify API, nginx, and in-flight image-gen proxy connections. M1 load is single-operator, so a small instance suffices; confirm the box and region (co-located with TOS-Beijing) before U21.
+- **Single admin credential storage.** Default: `ADMIN_EMAIL` + `ADMIN_PASSWORD` read from env at boot, compared constant-time at login (KTD-3). No DB-persisted hash, no bootstrap flow — there is one account and no user table.
 - **Should `propsRouter` exist as a separate router if it has no prop-only procedures?** Current call: yes — empty but reserved, so the API surface mirrors the data model.
 - **Comment author attribution under single-admin.** Today: just the admin email. If multi-user is added later, comments retroactively become ambiguous — they're all "admin@example.com". Acceptable.
 - **XLSX column translation.** The current export translates English keys to Chinese headers. Keep the translation as a static map in `packages/shared/src/lib/exports/headers.ts`.
@@ -926,10 +953,12 @@ Summarized in U20 and U22; the operational gist:
 - Current `benchmark-repo/backend/main.py`, `db.py`, `ai.py`, `storage.py` — the source of feature parity for Requirements R1-R18.
 - Current `benchmark-repo/frontend/src/{AssetLibrary,BenchmarkItemsPage}.tsx` — the source of UX parity for Requirements R1, R13.
 - Current `benchmark-repo/backend/migrations/*.sql` (13 files) — the source of the cumulative DB shape that U20 has to migrate from.
-- TanStack Start docs — https://tanstack.com/start
+- TanStack Router docs — https://tanstack.com/router
+- TanStack Query docs — https://tanstack.com/query
+- Fastify + tRPC adapter (`fastifyTRPCPlugin`) — https://trpc.io/docs/server/adapters/fastify
 - tRPC v11 docs — https://trpc.io
 - Drizzle ORM docs — https://orm.drizzle.team
-- better-auth — https://better-auth.com/llms.txt
+- pg-boss (deferred durable worker) — https://github.com/timgit/pg-boss
 - Vercel AI SDK v6 — https://sdk.vercel.ai
 - coss UI — https://coss.com/ui/llms.txt
 - Neon serverless driver — https://neon.tech/docs/serverless/serverless-driver
